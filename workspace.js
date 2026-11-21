@@ -40,6 +40,7 @@ function decision(approved) {
 }
 
 function pair() {
+  clearTimeout(reconnectTimer);
   const next = new WebSocket(socketUrl.href);
   socket = next;
   next.addEventListener('open', () => { if (socket === next && key) send({ type: 'hello', token: key }); });
@@ -81,11 +82,16 @@ function pair() {
     authenticated = false;
     remoteJob = null;
     clearApproval();
+    const reason = event.reason ? ': ' + event.reason.slice(0, 120) : '';
+    // An explicit policy rejection should be visible rather than silently retried.
     if (event.code === 1008) {
       key = undefined;
-      label(event.reason || 'Pairing rejected');
+      label('Pairing rejected (' + event.code + ')' + reason);
     } else if (key) {
-      label(pending ? 'Connection lost. Waiting for Photopea to finish the current operation…' : 'Connection lost. Reconnecting…');
+      const detail = event.code === 1006 ? 'abnormal close (1006)' : 'code ' + event.code + reason;
+      label(pending
+        ? 'Connection lost (' + detail + '). Waiting for Photopea to finish…'
+        : 'Connection lost (' + detail + '). Reconnecting…');
       reconnectTimer = setTimeout(pair, retryDelay);
       retryDelay = Math.min(retryDelay * 2, 15_000);
     } else label('Workspace unpaired');
