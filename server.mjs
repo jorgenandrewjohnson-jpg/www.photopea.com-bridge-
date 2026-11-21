@@ -9,7 +9,7 @@ import { createBridge } from './bridge.mjs';
 import { createOAuth, matches, send, SCOPE } from './oauth.mjs';
 import { makeOperation } from './photopea.mjs';
 
-const version = '0.3.0';
+const version = '0.3.1';
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const name = z.string().trim().min(1).max(200);
 const fileName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/).optional();

@@ -10,8 +10,9 @@ the GitHub repository’s `main` branch.
    Enter the existing bridge key and choose **Pair workspace**. If Photopea
    shows its welcome page, choose **Start using Photopea**. Keep the tab open.
 2. Connect `https://photopea-kdp-bridge.onrender.com/mcp` using **OAuth** and
-   **Dynamic Client Registration**. Use the existing plugin’s MCP management
-   screen if it offers one. In ChatGPT on the web, the separate connector
+   **Dynamic Client Registration**. In the existing plugin’s settings, use
+   **Open in desktop app** and use the desktop plugin’s MCP authorization.
+   In ChatGPT on the web, the separate connector
    workflow is **Plugins → + → Add custom MCP server**. That flow creates a
    separate plugin entry and should only be used with the owner’s approval.
 3. On the bridge’s authorization page, enter the owner authorization key.
@@ -24,7 +25,8 @@ the GitHub repository’s `main` branch.
 
 The OAuth issuer on the bridge offers code flow with S256 PKCE, scoped opaque
 tokens, and rotating refresh tokens to the private owner. It accepts ChatGPT’s
-stable and per-connection callback URLs. A server reboot invalidates currently
+stable and per-connection callback URLs, and the desktop application’s
+loopback callback. A server reboot invalidates currently
 issued tokens and jobs. Reauthorize ChatGPT if it cannot refresh after a deploy.
 The existing bearer key and `X-API-Key` continue to work for trusted clients.
 Only one browser workspace can be paired at a time.

@@ -195,59 +195,63 @@ test('HTTP rejects unauthorized calls, invalid origins, and malformed tool input
   });
 });
 
-test('OAuth registration, owner consent, resource and PKCE binding, single-use code and refresh', async () => {
-  const resource = origin + '/mcp';
-  const meta = await (await fetch(origin + '/.well-known/oauth-protected-resource/mcp')).json();
-  assert.equal(meta.resource, resource);
-  const issuer = await (await fetch(origin + '/.well-known/oauth-authorization-server')).json();
-  assert.equal(issuer.issuer, origin);
-  assert.deepEqual(issuer.code_challenge_methods_supported, ['S256']);
-  const uri = 'https://chatgpt.com/connector_platform_oauth_redirect';
-  function register(redirect_uri) {
-    return fetch(issuer.registration_endpoint, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ redirect_uris: [redirect_uri], token_endpoint_auth_method: 'none' })
+for (const native of [false, true]) {
+  test(`OAuth owner consent, PKCE, audience and refresh through ${native ? 'desktop loopback' : 'ChatGPT web'}`, async () => {
+    const resource = origin + '/mcp';
+    const meta = await (await fetch(origin + '/.well-known/oauth-protected-resource/mcp')).json();
+    assert.equal(meta.resource, resource);
+    const issuer = await (await fetch(origin + '/.well-known/oauth-authorization-server')).json();
+    assert.equal(issuer.issuer, origin);
+    assert.deepEqual(issuer.code_challenge_methods_supported, ['S256']);
+    const uri = native ? 'http://127.0.0.1:34723/callback' : 'https://chatgpt.com/connector_platform_oauth_redirect';
+    const target = native ? {} : { resource };
+    function register(redirect_uri) {
+      return fetch(issuer.registration_endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ redirect_uris: [redirect_uri], token_endpoint_auth_method: 'none' })
+      });
+    }
+    assert.equal((await register(uri + '?next=https://other.example')).status, 400);
+    assert.equal((await register('http://127.0.0.1.example.com:34723/callback')).status, 400);
+    const registration = await register(uri);
+    assert.equal(registration.status, 201);
+    const { client_id } = await registration.json();
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    const query = new URLSearchParams({ client_id, redirect_uri: uri, response_type: 'code', state: 'csrf-state',
+      code_challenge: challenge, code_challenge_method: 'S256', ...target, scope: 'photopea:edit' });
+    const consent = await fetch(issuer.authorization_endpoint + '?' + query);
+    assert.equal(consent.status, 200);
+    const flow = (await consent.text()).match(/name="flow" value="([^"]+)"/)[1];
+    const form = new URLSearchParams({ flow, key: token, decision: 'allow' });
+    const authCookie = consent.headers.get('set-cookie').split(';')[0];
+    assert.equal((await fetch(issuer.authorization_endpoint, { method: 'POST', body: form, headers: { Origin: origin } })).status, 403);
+    const redirect = await fetch(issuer.authorization_endpoint, {
+      method: 'POST', redirect: 'manual', body: form, headers: { Origin: origin, Cookie: authCookie }
     });
-  }
-  assert.equal((await register(uri + '?next=https://other.example')).status, 400);
-  const registration = await register(uri);
-  assert.equal(registration.status, 201);
-  const { client_id } = await registration.json();
-  const verifier = randomBytes(32).toString('base64url');
-  const challenge = createHash('sha256').update(verifier).digest('base64url');
-  const query = new URLSearchParams({ client_id, redirect_uri: uri, response_type: 'code', state: 'csrf-state',
-    code_challenge: challenge, code_challenge_method: 'S256', resource, scope: 'photopea:edit' });
-  const consent = await fetch(issuer.authorization_endpoint + '?' + query);
-  assert.equal(consent.status, 200);
-  const flow = (await consent.text()).match(/name="flow" value="([^"]+)"/)[1];
-  const form = new URLSearchParams({ flow, key: token, decision: 'allow' });
-  const authCookie = consent.headers.get('set-cookie').split(';')[0];
-  assert.equal((await fetch(issuer.authorization_endpoint, { method: 'POST', body: form, headers: { Origin: origin } })).status, 403);
-  const redirect = await fetch(issuer.authorization_endpoint, {
-    method: 'POST', redirect: 'manual', body: form, headers: { Origin: origin, Cookie: authCookie }
+    assert.equal(redirect.status, 303);
+    const redirectUrl = new URL(redirect.headers.get('location'));
+    assert.equal(redirectUrl.searchParams.get('iss'), origin);
+    assert.equal(redirectUrl.searchParams.get('state'), 'csrf-state');
+    assert.equal(redirectUrl.origin + redirectUrl.pathname, uri);
+    function exchange(body) {
+      return fetch(issuer.token_endpoint, { method: 'POST', body: new URLSearchParams({ client_id, ...target, ...body }) });
+    }
+    const codeExchange = { grant_type: 'authorization_code', code: redirectUrl.searchParams.get('code'), redirect_uri: uri, code_verifier: verifier };
+    assert.equal((await exchange({ ...codeExchange, resource: origin })).status, 400);
+    assert.equal((await exchange({ ...codeExchange, code_verifier: 'a'.repeat(43) })).status, 400);
+    const response = await exchange(codeExchange);
+    assert.equal(response.status, 200);
+    const credentials = await response.json();
+    assert.equal((await exchange(codeExchange)).status, 400);
+    const authenticated = await createClient('auto', credentials.access_token);
+    try { assert.equal((await authenticated.listTools()).tools.length, 8); }
+    finally { await authenticated.close(); }
+    const refresh = { grant_type: 'refresh_token', refresh_token: credentials.refresh_token };
+    assert.equal((await exchange(refresh)).status, 200);
+    assert.equal((await exchange(refresh)).status, 400);
   });
-  assert.equal(redirect.status, 303);
-  const redirectUrl = new URL(redirect.headers.get('location'));
-  assert.equal(redirectUrl.searchParams.get('iss'), origin);
-  assert.equal(redirectUrl.searchParams.get('state'), 'csrf-state');
-  assert.equal(redirectUrl.origin + redirectUrl.pathname, uri);
-  function exchange(body) {
-    return fetch(issuer.token_endpoint, { method: 'POST', body: new URLSearchParams({ client_id, resource, ...body }) });
-  }
-  const codeExchange = { grant_type: 'authorization_code', code: redirectUrl.searchParams.get('code'), redirect_uri: uri, code_verifier: verifier };
-  assert.equal((await exchange({ ...codeExchange, resource: origin })).status, 400);
-  assert.equal((await exchange({ ...codeExchange, code_verifier: 'a'.repeat(43) })).status, 400);
-  const response = await exchange(codeExchange);
-  assert.equal(response.status, 200);
-  const credentials = await response.json();
-  assert.equal((await exchange(codeExchange)).status, 400);
-  const authenticated = await createClient('auto', credentials.access_token);
-  try { assert.equal((await authenticated.listTools()).tools.length, 8); }
-  finally { await authenticated.close(); }
-  const refresh = { grant_type: 'refresh_token', refresh_token: credentials.refresh_token };
-  assert.equal((await exchange(refresh)).status, 200);
-  assert.equal((await exchange(refresh)).status, 400);
-});
+}
 
 test('mocked editor runs typed edits and scripts and returns valid download metadata', async () => {
   const browser = new MockPhotopea();

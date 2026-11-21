@@ -33,12 +33,15 @@ function html(res, status, body, headers) {
   send(res, status, '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Photopea</title>' +
     '<style>body{font:16px system-ui;max-width:44rem;margin:12vh auto;padding:1rem}input,button{font:inherit;margin:.5rem 0;padding:.5rem}input{width:min(22rem,90%)}</style>' + body + '</html>',
   { 'Content-Type': 'text/html; charset=utf-8',
-    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://chatgpt.com http://127.0.0.1:* http://localhost:*; frame-ancestors 'none'",
     ...headers });
 }
 
-const redirectAllowed = uri => typeof uri === 'string' &&
-  /^https:\/\/chatgpt\.com\/(?:connector_platform_oauth_redirect|connector\/oauth\/[a-zA-Z0-9_-]{1,128})$/.test(uri);
+const nativeRedirect = uri => typeof uri === 'string' &&
+  /^http:\/\/(?:127\.0\.0\.1|localhost):[1-9][0-9]{0,4}\/callback(?:\/[a-zA-Z0-9_-]{1,128})?$/.test(uri) &&
+  Number(uri.match(/:(\d+)\//)[1]) <= 65535;
+const redirectAllowed = uri => nativeRedirect(uri) || (typeof uri === 'string' &&
+  /^https:\/\/chatgpt\.com\/(?:connector_platform_oauth_redirect|connector\/oauth\/[a-zA-Z0-9_-]{1,128})$/.test(uri));
 
 export function createOAuth({ origin, ownerSecret, signingKey }) {
   const resource = origin + '/mcp';
@@ -52,6 +55,11 @@ export function createOAuth({ origin, ownerSecret, signingKey }) {
   function validClient(client, uri) {
     const nonce = client?.match(/^photopea\.([a-zA-Z0-9_-]{43})\.[a-zA-Z0-9_-]{43}$/)?.[1];
     return !!nonce && matches(client, clientId(uri, nonce));
+  }
+
+  function targetsResource(value, redirect) {
+    // The native client may omit resource. This issuer serves only one audience.
+    return value === resource || (value === null && nativeRedirect(redirect));
   }
 
   function trim(map, cap) {
@@ -117,7 +125,7 @@ export function createOAuth({ origin, ownerSecret, signingKey }) {
       const state = searchParams.get('state'), challenge = searchParams.get('code_challenge');
       const requestedScopes = (searchParams.get('scope') ?? '').split(' ').filter(Boolean);
       if (!redirectAllowed(uri) || !validClient(client, uri)) return fail(res, 'invalid_client');
-      if (searchParams.get('response_type') !== 'code' || searchParams.get('resource') !== resource ||
+      if (searchParams.get('response_type') !== 'code' || !targetsResource(searchParams.get('resource'), uri) ||
           searchParams.get('code_challenge_method') !== 'S256' || !/^[\w-]{43}$/.test(challenge ?? '') ||
           !state || state.length > 1024 || requestedScopes.some(scope => scope !== SCOPE) ||
           [...new Set(searchParams.keys())].some(key => searchParams.getAll(key).length > 1)) {
@@ -159,13 +167,14 @@ export function createOAuth({ origin, ownerSecret, signingKey }) {
     if (pathname === '/oauth/token' && req.method === 'POST') {
       if (!req.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) return fail(res, 'invalid_request');
       const form = new URLSearchParams(await readBody(req, 8192));
-      if ([...new Set(form.keys())].some(key => form.getAll(key).length > 1) || form.get('resource') !== resource) return fail(res, 'invalid_target');
+      if ([...new Set(form.keys())].some(key => form.getAll(key).length > 1)) return fail(res, 'invalid_request');
       const type = form.get('grant_type');
       const map = type === 'authorization_code' ? codes : type === 'refresh_token' ? refresh : null;
       if (!map) return fail(res, 'unsupported_grant_type');
       const key = form.get(type === 'authorization_code' ? 'code' : 'refresh_token');
       const grant = read(map, key);
       if (!grant || !matches(form.get('client_id'), grant.client)) return fail(res, 'invalid_grant');
+      if (!targetsResource(form.get('resource'), grant.uri)) return fail(res, 'invalid_target');
       if (type === 'authorization_code') {
         const verifier = form.get('code_verifier') ?? '';
         if (form.get('redirect_uri') !== grant.uri || !/^[\w.~-]{43,128}$/.test(verifier) ||
