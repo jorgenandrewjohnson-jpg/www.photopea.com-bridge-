@@ -33,7 +33,7 @@ function send(message) {
 }
 function idle() {
   syncButtons();
-  if (loaded && authenticated && !pending && !remoteJob && !approvalId) {
+  if (loaded && authenticated && !pending && !remoteJob && !approvalId && !restoring) {
     send({ type: 'editor_idle' });
     // Only run once per page: opening the exact project link should actually
     // restore the saved PSD in the paired Photopea iframe.
@@ -60,8 +60,11 @@ async function restoreExport(id) {
     iframe.contentWindow.postMessage(data, photopea);
     label('Loading saved editable PSD…');
   } catch (error) {
+    // An iframe error must not strand the editing queue in the local-file state.
+    if (pending?.restoredExport) pending = null;
     restored = true; // avoid an infinite automatic retry loop
     label('Unable to open saved cover: ' + (error?.message || 'unknown error') + '. Use a locally saved PSD or re-export.');
+    if (authenticated) send({ type: 'editor_idle' });
   } finally {
     restoring = false;
     syncButtons();
@@ -96,7 +99,7 @@ function pair(takeover = false) {
       label(loaded ? 'Paired. Checking editor…' : 'Paired. Loading Photopea…');
       idle();
     } else if (message.type === 'probe') {
-      if (pending || remoteJob || !loaded) return;
+      if (pending || remoteJob || !loaded || restoring) return;
       const prefix = 'photopea-probe:' + message.id;
       pending = { type: 'probe', prefix, id: message.id, socket: next };
       syncButtons();
@@ -166,7 +169,7 @@ function rejectStep(message, error) {
 }
 
 function startStep(message, connection) {
-  if (!loaded || pending || (remoteJob && remoteJob !== message.job_id)) return rejectStep(message, 'Photopea is busy.');
+  if (!loaded || pending || restoring || (remoteJob && remoteJob !== message.job_id)) return rejectStep(message, 'Photopea is busy.');
   if (seen.has(message.step_id)) return rejectStep(message, 'Duplicate command was blocked.');
   if (seen.size >= 512) seen.delete(seen.values().next().value);
   seen.add(message.step_id);
