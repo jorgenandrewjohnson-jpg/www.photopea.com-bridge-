@@ -39,11 +39,11 @@ function decision(approved) {
   clearApproval();
 }
 
-function pair() {
+function pair(takeover = false) {
   clearTimeout(reconnectTimer);
   const next = new WebSocket(socketUrl.href);
   socket = next;
-  next.addEventListener('open', () => { if (socket === next && key) send({ type: 'hello', token: key }); });
+  next.addEventListener('open', () => { if (socket === next && key) send({ type: 'hello', token: key, takeover }); });
   next.addEventListener('message', event => {
     if (socket !== next) return;
     let message;
@@ -96,7 +96,7 @@ function pair() {
       label(pending
         ? 'Connection lost (' + detail + '). Waiting for Photopea to finish…'
         : 'Connection lost (' + detail + '). Reconnecting…');
-      reconnectTimer = setTimeout(pair, retryDelay);
+      reconnectTimer = setTimeout(() => pair(false), retryDelay);
       retryDelay = Math.min(retryDelay * 2, 15_000);
     } else label('Workspace unpaired');
     syncButtons();
@@ -117,7 +117,7 @@ connect.addEventListener('click', () => {
   tokenInput.value = '';
   label('Pairing workspace…');
   syncButtons();
-  pair();
+  pair(true);
 });
 
 function rejectStep(message, error) {
