@@ -12,6 +12,8 @@ const UUID_BYTES = 36;
 const FRAME_HEADER = UUID_BYTES * 2;
 const TTL = 60 * 60_000;
 const MAX_JOBS = 100;
+// Give the embedded editor time to load before deciding that its handshake failed.
+const AUTH_TIMEOUT_MS = 30_000;
 const mime = { psd: 'image/vnd.adobe.photoshop', png: 'image/png', jpg: 'image/jpeg', pdf: 'application/pdf' };
 
 function isFormat(bytes, format) {
@@ -26,6 +28,7 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
   const jobs = new Map();
   let workspace = null, active = null, pendingProbe = null, responsiveAt = 0, editorReady = false;
   let storedBytes = 0;
+  let socketSequence = 0;
 
   async function expireDisk() {
     const entries = await readdir(storage);
@@ -237,17 +240,36 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
   }
 
   server.on('upgrade', (req, socket, head) => {
-    if (req.url !== '/socket' || req.headers.origin !== origin || wss.clients.size >= 12) return socket.destroy();
+    // Record rejection categories only; never log headers, URLs, or bridge keys.
+    const rejection = req.url !== '/socket' ? 'path'
+      : req.headers.origin !== origin ? 'origin'
+        : wss.clients.size >= 12 ? 'capacity' : null;
+    if (rejection) {
+      console.warn('[photopea-ws] upgrade rejected:', rejection);
+      return socket.destroy();
+    }
     wss.handleUpgrade(req, socket, head, sock => wss.emit('connection', sock));
   });
   wss.on('connection', socket => {
+    const connectionId = ++socketSequence;
     let authenticated = false;
     socket.alive = true;
-    const authTimeout = setTimeout(() => socket.terminate(), 5000).unref();
+    socket._bridgeId = connectionId;
+    console.info('[photopea-ws] connected:', connectionId);
+    const authTimeout = setTimeout(() => {
+      console.warn('[photopea-ws] hello timeout:', connectionId);
+      socket.close(1008, 'Pairing timed out');
+      // Give the browser a chance to receive the close reason.
+      setTimeout(() => socket.terminate(), 2000).unref();
+    }, AUTH_TIMEOUT_MS).unref();
     socket.on('pong', () => { socket.alive = true; });
-    socket.on('error', () => {});
-    socket.on('close', () => {
+    socket.on('error', error => {
+      // Only report the error code. Exception messages can contain private data.
+      console.warn('[photopea-ws] socket error:', connectionId, error?.code ?? 'unknown');
+    });
+    socket.on('close', code => {
       clearTimeout(authTimeout);
+      console.info('[photopea-ws] closed:', connectionId, 'code:', code, 'authenticated:', authenticated);
       disconnect(socket, 'Workspace disconnected.');
     });
     socket.on('message', (raw, binary) => {
@@ -257,17 +279,30 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
       }
       let hello;
       try { if (!binary && raw.length < 2048) hello = JSON.parse(raw.toString()); } catch {}
-      if (hello?.type !== 'hello' || !matches(hello.token, token)) return socket.close(1008, 'Invalid bridge key');
-      if (workspace) return socket.close(1008, 'A workspace is already paired');
+      if (hello?.type !== 'hello' || !matches(hello.token, token)) {
+        console.warn('[photopea-ws] invalid hello or key:', connectionId);
+        return socket.close(1008, 'Invalid bridge key');
+      }
+      // A socket which is closing must not permanently reserve the only workspace.
+      if (workspace?.readyState === WebSocket.OPEN) {
+        console.info('[photopea-ws] already paired:', connectionId);
+        return socket.close(1008, 'A workspace is already paired');
+      }
+      if (workspace) disconnect(workspace, 'Previous workspace was disconnected.');
       clearTimeout(authTimeout);
       authenticated = true;
       workspace = socket;
+      console.info('[photopea-ws] authenticated:', connectionId);
       post(socket, { type: 'authenticated', max_file_bytes: maxFile });
     });
   });
   const heartbeat = setInterval(() => {
     for (const socket of wss.clients) {
-      if (!socket.alive) { socket.terminate(); continue; }
+      if (!socket.alive) {
+        console.warn('[photopea-ws] heartbeat lost:', socket._bridgeId ?? 'unknown');
+        socket.terminate();
+        continue;
+      }
       socket.alive = false;
       socket.ping();
     }
@@ -277,7 +312,7 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
       editorReady = false;
     }
     probe();
-  }, 5000).unref();
+  }, 15000).unref();
   const cleanup = setInterval(() => {
     for (const [id, job] of jobs) {
       if (!job.expires || Date.now() < job.expires) continue;
