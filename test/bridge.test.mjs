@@ -333,3 +333,53 @@ test('timeout and reconnect never replay an edit or execute a queued command aga
     await eventually(() => tool('bridge_status'), current => !current.connected);
   }
 });
+
+test('a newly authorized tab replaces an idle paired workspace without losing active edits', async () => {
+  const first = new MockPhotopea();
+  await first.connect();
+  await first.ready();
+  const displaced = new Promise(resolve => first.socket.once('close',
+    (code, reason) => resolve({ code, reason: reason.toString() })));
+
+  const second = new MockPhotopea();
+  try {
+    await second.connect();
+    const displacedResult = await displaced;
+    assert.equal(displacedResult.code, 1000);
+    assert.equal(displacedResult.reason, 'Replaced by another workspace');
+    await second.ready();
+    assert.equal((await tool('bridge_status')).can_execute, true);
+
+    const edited = await submit('photopea_open_document', {
+      mode: 'new', name: 'Replacement test', width: 100, height: 100
+    });
+    assert.equal(edited.status, 'completed');
+    assert.equal(first.steps, 0);
+    assert.equal(second.steps, 1);
+
+    // Protect an in-progress operation from a third tab taking control.
+    second.auto = false;
+    const running = await tool('photopea_open_document', {
+      mode: 'new', name: 'Protected edit', width: 60, height: 60,
+      request_id: randomUUID()
+    });
+    await eventually(() => status(running.job_id), result => result.status === 'running');
+    const challenger = new WebSocket(origin.replace('http', 'ws') + '/socket', { origin });
+    const rejected = new Promise(resolve => challenger.once('close',
+      (code, reason) => resolve({ code, reason: reason.toString() })));
+    await new Promise((resolve, reject) => {
+      challenger.once('open', resolve);
+      challenger.once('error', reject);
+    });
+    challenger.send(JSON.stringify({ type: 'hello', token }));
+    const rejection = await rejected;
+    assert.equal(rejection.code, 1008);
+    assert.match(rejection.reason, /running a command/);
+    assert.equal((await tool('bridge_status')).connected, true);
+    assert.equal((await eventually(() => status(running.job_id), terminal)).status, 'uncertain');
+  } finally {
+    second.close();
+    first.close();
+    await eventually(() => tool('bridge_status'), value => !value.connected);
+  }
+});
