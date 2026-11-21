@@ -84,7 +84,11 @@ function pair() {
     clearApproval();
     const reason = event.reason ? ': ' + event.reason.slice(0, 120) : '';
     // An explicit policy rejection should be visible rather than silently retried.
-    if (event.code === 1008) {
+    if (event.code === 1000 && event.reason === 'Replaced by another workspace') {
+      // Another authorized tab took control; avoid both tabs endlessly reconnecting.
+      key = undefined;
+      label('This workspace was replaced by another paired tab.');
+    } else if (event.code === 1008) {
       key = undefined;
       label('Pairing rejected (' + event.code + ')' + reason);
     } else if (key) {

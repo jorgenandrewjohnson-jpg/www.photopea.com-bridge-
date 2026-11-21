@@ -283,12 +283,19 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
         console.warn('[photopea-ws] invalid hello or key:', connectionId);
         return socket.close(1008, 'Invalid bridge key');
       }
-      // A socket which is closing must not permanently reserve the only workspace.
-      if (workspace?.readyState === WebSocket.OPEN) {
-        console.info('[photopea-ws] already paired:', connectionId);
-        return socket.close(1008, 'A workspace is already paired');
+      // A fresh, correctly authenticated pairing may recover an abandoned browser
+      // tab. Never replace a workspace while an edit is executing or queued.
+      if (workspace && (active || [...jobs.values()].some(job => job.status === 'queued'))) {
+        console.info('[photopea-ws] replacement denied; workspace busy:', connectionId);
+        return socket.close(1008, 'Photopea is running a command; try again after it finishes');
       }
-      if (workspace) disconnect(workspace, 'Previous workspace was disconnected.');
+      if (workspace) {
+        const previous = workspace;
+        console.info('[photopea-ws] replaced idle workspace:', previous._bridgeId ?? 'unknown', 'with:', connectionId);
+        disconnect(previous, 'Workspace replaced by another authorized pairing.');
+        if (previous.readyState === WebSocket.OPEN) previous.close(1000, 'Replaced by another workspace');
+        else previous.terminate();
+      }
       clearTimeout(authTimeout);
       authenticated = true;
       workspace = socket;
