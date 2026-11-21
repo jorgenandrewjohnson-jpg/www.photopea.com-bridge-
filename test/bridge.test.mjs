@@ -96,14 +96,14 @@ class MockPhotopea {
     doc.activeLayer = layer;
     return layer;
   }
-  async connect() {
+  async connect(takeover = false) {
     this.socket = new WebSocket(origin.replace('http', 'ws') + '/socket', { origin });
     this.socket.on('message', raw => this.message(JSON.parse(raw.toString())));
     await new Promise((resolve, reject) => {
       this.socket.once('open', resolve);
       this.socket.once('error', reject);
     });
-    this.send({ type: 'hello', token });
+    this.send({ type: 'hello', token, takeover });
     await eventually(() => this.replies.some(m => m.type === 'authenticated'));
   }
   send(message) { this.socket.send(JSON.stringify(message)); }
@@ -338,12 +338,26 @@ test('a newly authorized tab replaces an idle paired workspace without losing ac
   const first = new MockPhotopea();
   await first.connect();
   await first.ready();
+  // Automatic reconnects must not displace a currently paired editor.
+  const automatic = new WebSocket(origin.replace('http', 'ws') + '/socket', { origin });
+  const autoRejected = new Promise(resolve => automatic.once('close',
+    (code, reason) => resolve({ code, reason: reason.toString() })));
+  await new Promise((resolve, reject) => {
+    automatic.once('open', resolve);
+    automatic.once('error', reject);
+  });
+  automatic.send(JSON.stringify({ type: 'hello', token, takeover: false }));
+  const automaticResult = await autoRejected;
+  assert.equal(automaticResult.code, 1008);
+  assert.match(automaticResult.reason, /Another workspace is paired/);
+  assert.equal((await tool('bridge_status')).can_execute, true);
+
   const displaced = new Promise(resolve => first.socket.once('close',
     (code, reason) => resolve({ code, reason: reason.toString() })));
 
   const second = new MockPhotopea();
   try {
-    await second.connect();
+    await second.connect(true);
     const displacedResult = await displaced;
     assert.equal(displacedResult.code, 1000);
     assert.equal(displacedResult.reason, 'Replaced by another workspace');
@@ -371,7 +385,7 @@ test('a newly authorized tab replaces an idle paired workspace without losing ac
       challenger.once('open', resolve);
       challenger.once('error', reject);
     });
-    challenger.send(JSON.stringify({ type: 'hello', token }));
+    challenger.send(JSON.stringify({ type: 'hello', token, takeover: true }));
     const rejection = await rejected;
     assert.equal(rejection.code, 1008);
     assert.match(rejection.reason, /running a command/);

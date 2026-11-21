@@ -283,8 +283,13 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
         console.warn('[photopea-ws] invalid hello or key:', connectionId);
         return socket.close(1008, 'Invalid bridge key');
       }
-      // A fresh, correctly authenticated pairing may recover an abandoned browser
-      // tab. Never replace a workspace while an edit is executing or queued.
+      // Only an explicit Pair click can take ownership from an existing tab.
+      // An automatic reconnect must never displace a different paired browser.
+      if (workspace && hello.takeover !== true) {
+        console.info('[photopea-ws] automatic pairing blocked; another tab owns workspace:', connectionId);
+        return socket.close(1008, 'Another workspace is paired; click Pair to take over');
+      }
+      // Never replace a workspace while an edit is executing or queued.
       if (workspace && (active || [...jobs.values()].some(job => job.status === 'queued'))) {
         console.info('[photopea-ws] replacement denied; workspace busy:', connectionId);
         return socket.close(1008, 'Photopea is running a command; try again after it finishes');
