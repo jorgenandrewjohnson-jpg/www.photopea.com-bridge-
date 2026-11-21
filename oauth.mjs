@@ -142,11 +142,10 @@ export function createOAuth({ origin, ownerSecret, signingKey }) {
     }
     if (pathname === '/oauth/authorize' && req.method === 'POST') {
       const postOrigin = req.headers.origin;
-      const referrer = req.headers.referer;
-      let validReferrer = false;
-      try { validReferrer = new URL(referrer).origin === origin; } catch {}
+      // Browser Fetch Metadata is forbidden to scripts and gives a reliable
+      // same-origin signal even when privacy settings omit the Origin header.
       const sameOrigin = postOrigin === origin ||
-        (!postOrigin && validReferrer && req.headers['sec-fetch-site'] === 'same-origin');
+        (!postOrigin && req.headers['sec-fetch-site'] === 'same-origin');
       if (!sameOrigin || !req.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) {
         // Log only a rejection category. Never log POST bodies, secrets or codes.
         console.warn('[photopea-oauth] consent rejected: request origin or content type');
