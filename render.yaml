@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: photopea-cover-bridge
+    runtime: node
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: BRIDGE_TOKEN
+        generateValue: true
+      - key: NODE_ENV
+        value: production

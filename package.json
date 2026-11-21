@@ -1,0 +1,10 @@
+{
+  "name": "photopea-cover-bridge",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted, token-protected MCP bridge to the Photopea Live Messaging API",
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node server.mjs", "check": "node --check server.mjs" },
+  "dependencies": { "ws": "^8.18.0" }
+}
