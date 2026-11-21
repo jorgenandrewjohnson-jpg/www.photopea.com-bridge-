@@ -9,6 +9,14 @@ const tokenInput = document.querySelector('#token');
 const connect = document.querySelector('#connect');
 const fileInput = document.querySelector('#file');
 const openFile = document.querySelector('#openFile');
+const restoreFile = document.querySelector('#restoreFile');
+// A project link contains only an opaque export ID. Authentication stays in the
+// bridge-key field and the server enforces bearer authorization on downloads.
+const projectIdRaw = new URL(location.href).searchParams.get('open_export');
+const projectId = projectIdRaw && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(projectIdRaw)
+  ? projectIdRaw : null;
+let restored = false, restoring = false;
+restoreFile.hidden = !projectId;
 const approval = document.querySelector('#approval');
 const seen = new Set();
 let socket, key, reconnectTimer, authenticated = false, loaded = false, pending = null, remoteJob = null, approvalId = null;
@@ -17,6 +25,7 @@ let retryDelay = 1000, maxFile = 100_000_000;
 function label(text) { statusLine.textContent = text; }
 function syncButtons() {
   openFile.disabled = !loaded || !!pending || !!remoteJob || !!approvalId;
+  restoreFile.disabled = !projectId || !loaded || !authenticated || !!pending || !!remoteJob || !!approvalId || restoring;
   connect.textContent = key ? 'Unpair workspace' : 'Pair workspace';
 }
 function send(message) {
@@ -24,7 +33,42 @@ function send(message) {
 }
 function idle() {
   syncButtons();
-  if (loaded && authenticated && !pending && !remoteJob && !approvalId) send({ type: 'editor_idle' });
+  if (loaded && authenticated && !pending && !remoteJob && !approvalId && !restoring) {
+    send({ type: 'editor_idle' });
+    // Only run once per page: opening the exact project link should actually
+    // restore the saved PSD in the paired Photopea iframe.
+    if (projectId && !restored && !restoring) restoreExport(projectId);
+  }
+}
+async function restoreExport(id) {
+  if (!id || !key || !authenticated || !loaded || pending || remoteJob || restoring) return;
+  restoring = true;
+  syncButtons();
+  label('Opening saved cover PSD in Photopea…');
+  try {
+    const response = await fetch('/download/' + id, {
+      headers: { Authorization: 'Bearer ' + key },
+      cache: 'no-store'
+    });
+    if (!response.ok) throw new Error(response.status === 404 ? 'Saved PSD expired or unavailable' : 'Download denied (' + response.status + ')');
+    const data = await response.arrayBuffer();
+    if (data.byteLength > maxFile || data.byteLength < 26) throw new Error('The saved PSD is outside the allowed size range');
+    // There is no URL or secret passed to Photopea. Only the decoded PSD bytes.
+    send({ type: 'editor_busy' });
+    pending = { type: 'local', socket, restoredExport: true };
+    restored = true;
+    iframe.contentWindow.postMessage(data, photopea);
+    label('Loading saved editable PSD…');
+  } catch (error) {
+    // An iframe error must not strand the editing queue in the local-file state.
+    if (pending?.restoredExport) pending = null;
+    restored = true; // avoid an infinite automatic retry loop
+    label('Unable to open saved cover: ' + (error?.message || 'unknown error') + '. Use a locally saved PSD or re-export.');
+    if (authenticated) send({ type: 'editor_idle' });
+  } finally {
+    restoring = false;
+    syncButtons();
+  }
 }
 function clearApproval() {
   approvalId = null;
@@ -55,7 +99,7 @@ function pair(takeover = false) {
       label(loaded ? 'Paired. Checking editor…' : 'Paired. Loading Photopea…');
       idle();
     } else if (message.type === 'probe') {
-      if (pending || remoteJob || !loaded) return;
+      if (pending || remoteJob || !loaded || restoring) return;
       const prefix = 'photopea-probe:' + message.id;
       pending = { type: 'probe', prefix, id: message.id, socket: next };
       syncButtons();
@@ -125,7 +169,7 @@ function rejectStep(message, error) {
 }
 
 function startStep(message, connection) {
-  if (!loaded || pending || (remoteJob && remoteJob !== message.job_id)) return rejectStep(message, 'Photopea is busy.');
+  if (!loaded || pending || restoring || (remoteJob && remoteJob !== message.job_id)) return rejectStep(message, 'Photopea is busy.');
   if (seen.has(message.step_id)) return rejectStep(message, 'Duplicate command was blocked.');
   if (seen.size >= 512) seen.delete(seen.values().next().value);
   seen.add(message.step_id);
@@ -185,7 +229,7 @@ window.addEventListener('message', event => {
     return;
   }
   if (task.type === 'local') {
-    label('Local file sent to Photopea');
+    label(task.restoredExport ? 'Saved editable cover opened in Photopea' : 'Local file sent to Photopea');
     idle();
     return;
   }
@@ -199,6 +243,11 @@ window.addEventListener('message', event => {
   send({ type: 'complete', ...ids, value: task.result?.value });
 });
 
+restoreFile.addEventListener('click', () => {
+  if (!projectId || restoreFile.disabled) return;
+  restored = false;
+  restoreExport(projectId);
+});
 openFile.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', async () => {
   const file = fileInput.files?.[0];
@@ -239,4 +288,8 @@ function addDownload(id) {
   while (list.children.length > 8) list.lastChild.remove();
 }
 
+if (projectId) {
+  // Make the same saved PSD downloadable after pairing, even in a fresh tab.
+  addDownload(projectId);
+}
 iframe.src = photopea + '/';
