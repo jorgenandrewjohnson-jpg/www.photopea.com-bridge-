@@ -1,47 +1,85 @@
-# Photopea Book Cover Studio — MCP Bridge (prototype 0.2)
+# Photopea Book Cover Studio bridge
 
-**Status:** deployable starter source. It has **not** been hosted or connected to ChatGPT. It uses Photopea's official Live Messaging API, not an undocumented direct API and not remote control of an arbitrary existing photopea.com tab.
+The bridge connects a remote MCP client to the official Photopea editor inside
+a paired browser tab. The existing Render service deploys the Dockerfile from
+the GitHub repository’s `main` branch.
 
-## What it does
+## Connect Photopea and ChatGPT
 
-- Runs a token-protected HTTP MCP endpoint at `/mcp`, including `bridge_status`, `photopea_run_script`, `photopea_export`, and `job_status`.
-- Hosts a browser companion at `/workspace`, which embeds the official Photopea site. The companion must remain open and connected.
-- Opens locally selected PSD/image files into the embedded Photopea tab, runs JavaScript scripts there, and saves exported PSD/PNG/JPG files on the bridge service.
-- Export download links are relative (`/download/<job id>`) and require a Bearer token. A remote MCP client needs compatible authenticated file download support, or the export must be retrieved through a different authorized method.
+1. Open [the Photopea workspace](https://photopea-kdp-bridge.onrender.com/workspace).
+   Enter the existing bridge key and choose **Pair workspace**. If Photopea
+   shows its welcome page, choose **Start using Photopea**. Keep the tab open.
+2. Connect `https://photopea-kdp-bridge.onrender.com/mcp` using **OAuth** and
+   **Dynamic Client Registration**. Use the existing plugin’s MCP management
+   screen if it offers one. In ChatGPT on the web, the separate connector
+   workflow is **Plugins → + → Add custom MCP server**. That flow creates a
+   separate plugin entry and should only be used with the owner’s approval.
+3. On the bridge’s authorization page, enter the owner authorization key.
+   This is the value of the optional `MCP_OWNER_KEY` environment variable, or
+   the existing `BRIDGE_TOKEN` when a separate key has not been configured.
+   Keep the key out of ChatGPT messages and plugin configuration.
+4. Check that the plugin discovers the eight tools below. Ask ChatGPT to
+   create a document, add an editable text layer, and export a PSD. Check the
+   editor and the export’s final job status.
 
-## Quick local check
+The OAuth issuer on the bridge offers code flow with S256 PKCE, scoped opaque
+tokens, and rotating refresh tokens to the private owner. It accepts ChatGPT’s
+stable and per-connection callback URLs. A server reboot invalidates currently
+issued tokens and jobs. Reauthorize ChatGPT if it cannot refresh after a deploy.
+The existing bearer key and `X-API-Key` continue to work for trusted clients.
+Only one browser workspace can be paired at a time.
 
-1. Install Node.js 20+.
-2. Run `npm install`.
-3. Generate a strong secret, e.g. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
-4. Set environment variable `BRIDGE_TOKEN` to the generated secret and run `npm start`.
-5. Open `http://localhost:3000/workspace`, paste that secret and press **Connect**. Photopea loads in the embedded frame.
-6. Test JSON-RPC at `http://localhost:3000/mcp` with `Authorization: Bearer <token>` and `Content-Type: application/json`.
+## Tools
 
-Example:
+| Tool | Operation |
+| --- | --- |
+| `bridge_status` | Check HTTP health, browser pairing and independent Photopea responsiveness. |
+| `photopea_open_document` | Create an RGB document, activate an already open document by exact name, or open a PSD, PNG or JPG from base64. For large files, use **Open local PSD or image** in the paired tab. |
+| `photopea_add_text` | Add editable point text with position, color, size, font, alignment and rotation. |
+| `photopea_place_image` | Place a PNG or JPG as an embedded Smart Object with a top-left position and relative scale. Tool inputs support about 2 MiB per file. |
+| `photopea_manage_layers` | List, rename, reorder within a group, show, hide, update editable text, move, scale or rotate. Use exact layer paths. |
+| `photopea_run_script` | Run a Photopea scripting DOM command after the paired browser operator approves the displayed script. Use typed tools for ordinary edits. |
+| `photopea_export` | Export PSD, PNG, JPG or a single-page flattened RGB PDF at the document’s physical size. PDF is limited to 18 megapixels. |
+| `job_status` | Check completion, get confirmed results, and retrieve a private download URL. |
 
-```bash
-curl -s http://localhost:3000/mcp \
-  -H "Authorization: Bearer $BRIDGE_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bridge_status","arguments":{}}}'
+Mutating tools return a job ID. Poll `job_status` and check the final state.
+Repeat the same `request_id` with the same arguments to get the existing job
+within its retention period. If a connection is lost while a command runs,
+inspect the workspace before submitting another edit. The bridge will not
+automatically replay a command whose result is uncertain.
+
+Exported files appear in the paired workspace as download buttons. Trusted
+clients can also download the URL using an authorization header. Results and
+downloads are retained for up to one hour and depend on the running service
+instance. Save any needed PSD locally. The browser can only control the editor
+embedded in its paired workspace.
+
+## Run and test locally
+
+Use Node.js 22 or later. Set `BRIDGE_TOKEN` to a random secret of at least 32
+characters in your shell environment, then run:
+
+```sh
+npm ci
+npm test
+npm start
 ```
 
-A connected workspace should show both `connected` and `photopea_ready` as true. Running a script returns a job ID; poll `job_status` to verify completion. A queued command **does not** indicate that Photopea edited a file.
+Automated tests exercise the MCP handshake and discovery in both protocol eras,
+OAuth and browser authentication, edit dispatch, timeout/reconnect handling,
+and downloads using a mocked Photopea editor. For a live test, open
+`http://localhost:3000/workspace`, pair it with the local key, then run
+`node test/live.mjs`. The test creates a disposable document, edits it and
+reopens its PSD. Set `TEST_SCRIPT_APPROVAL=1` to include the interactive
+script approval. Use `MCP_URL` to target a different service and its own
+disposable workspace. The test writes exports under the system temp directory.
 
-## Deploy to HTTPS hosting
+The existing service uses its configured `BRIDGE_TOKEN`. Render supplies
+`RENDER_EXTERNAL_URL` for OAuth discovery and origin validation. For another
+host, set `PUBLIC_ORIGIN` to the HTTPS origin without a trailing slash. Docker
+uses its ephemeral `/tmp/photopea-exports` directory. `/health` reports the
+running version. The MCP endpoint uses the maintained TypeScript SDK with the
+2026-07-28 revision and legacy 2025 Streamable HTTP compatibility.
 
-Host the files on a Node-compatible HTTPS service (for example, Render using `render.yaml` or a Docker host). On Render, create a repository from this folder, choose **New Blueprint**, and deploy `render.yaml`. The hosting account and deployment authorization are user actions. Retrieve the secret stored in `BRIDGE_TOKEN` from the host's environment settings. Open the resulting `https://YOUR-HOST/workspace` in a browser and pair it by pasting the secret.
-
-**ChatGPT connection is separate:** Your current `photopea-book-cover-studio` is a skill-only personal plugin, not an MCP app. To expose these MCP tools inside ChatGPT, an eligible custom MCP app/connector must be created or configured to point to `https://YOUR-HOST/mcp`, with authenticated access. ChatGPT access to custom MCP connectors depends on the account's supported features and accepted authentication method. Do not paste the bridge secret into ordinary chat. If ChatGPT does not allow a Bearer-token MCP connector, this prototype requires an authentication layer compatible with the offered connector flow. Uploading this ZIP by itself does **not** connect the existing plugin.
-
-## Production limitations
-
-- This is a starter implementation, not a security-audited production service. A single workspace session is supported.
-- The bridge currently accepts arbitrary Photopea scripts from an authenticated client. Treat the key like a password.
-- Export files are stored in the host filesystem and may disappear on an ephemeral host. Configure durable storage if needed. No automatic deletion/expiration is included.
-- The MCP endpoint supports simple JSON responses to Streamable HTTP POST. Some MCP clients require additional OAuth/discovery behavior or richer session handling. Add these if the chosen ChatGPT connector requires them.
-- The user must leave the embedded Photopea browser tab open. It cannot attach to a different existing Photopea tab.
-- Actual PSD quality, script semantics, KDP preflight, and exported file fidelity must be verified in Photopea and Amazon KDP. A completed script job only confirms a `done` message from Photopea, not that every editing intent succeeded.
-- Authorize this bridge only for your own private use. It is not affiliated with Photopea.
-
-Official API references: https://www.photopea.com/api/live and https://www.photopea.com/learn/scripts
+- [Photopea Live Messaging API](https://www.photopea.com/api/live)
+- [OpenAI custom MCP server setup](https://developers.openai.com/api/docs/guides/custom-mcp-server)

@@ -1,184 +1,166 @@
 import http from 'node:http';
-import fs from 'node:fs';
-import path from 'node:path';
-import crypto from 'node:crypto';
-import { WebSocketServer, WebSocket } from 'ws';
-import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import { toNodeHandler } from '@modelcontextprotocol/node';
+import { z } from 'zod';
+import { createBridge } from './bridge.mjs';
+import { createOAuth, matches, send, SCOPE } from './oauth.mjs';
+import { makeOperation } from './photopea.mjs';
 
-const port = Number(process.env.PORT || 3000);
-const token = process.env.BRIDGE_TOKEN || '';
-if (token.length < 32) {
-  console.error('BRIDGE_TOKEN must be set to a random value of at least 32 characters.');
-  process.exit(1);
-}
-const dir = path.dirname(fileURLToPath(import.meta.url));
-const storageDir = process.env.STORAGE_DIR || path.join(dir, 'exports');
-fs.mkdirSync(storageDir, { recursive: true });
-const jobs = new Map();
-let workspace = null;
-let workspaceReady = false;
-let activeId = null;
-const MAX_FILE = Number(process.env.MAX_FILE_BYTES || 100_000_000);
-const MAX_JOBS = 60;
+const version = '0.3.0';
+const directory = fileURLToPath(new URL('.', import.meta.url));
+const name = z.string().trim().min(1).max(200);
+const fileName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/).optional();
+const text = z.string().min(1).max(6000);
+const coordinate = z.number().min(-30_000).max(30_000);
+const scale = z.number().min(1).max(1000);
+const rotation = z.number().min(-360).max(360);
+const layerPath = z.array(name).min(1).max(12);
+const requestKey = z.string().min(8).max(128).optional().describe('Reuse this ID with identical arguments when retrying a request.');
+const ownerScope = { type: 'oauth2', scopes: [SCOPE] };
+const base64 = z.string().min(8).max(2_800_000).describe('Base64 file content without a data URL prefix, approximately 2 MiB maximum.');
 
-function auth(req) {
-  const raw = req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.headers['x-api-key'] || '';
-  const a = Buffer.from(String(raw));
-  const b = Buffer.from(token);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-function send(res, code, body, extra = {}) {
-  const payload = typeof body === 'string' ? body : JSON.stringify(body);
-  res.writeHead(code, { 'Content-Type': typeof body === 'string' ? 'text/plain; charset=utf-8' : 'application/json', 'Cache-Control': 'no-store', ...extra });
-  res.end(payload);
-}
-function success(id, result) { return { jsonrpc: '2.0', id, result }; }
-function error(id, code, message) { return { jsonrpc: '2.0', id, error: { code, message } }; }
-function statusInfo() { return { connected: !!workspace && workspace.readyState === WebSocket.OPEN, photopea_ready: workspaceReady, active_job: activeId, queued_jobs: [...jobs.values()].filter(x=>x.status === 'queued').length, note: 'Both connected and photopea_ready must be true before jobs can execute.' }; }
-function resultTool(value, isError = false) { return { content: [{ type: 'text', text: JSON.stringify(value) }], isError }; }
-const schemas = [
-  { name: 'bridge_status', description: 'Check whether the Photopea companion workspace is connected and ready. Do not claim Photopea is connected unless photopea_ready is true.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'photopea_run_script', description: 'Queue a Photopea-compatible JavaScript editing script in the open companion workspace. Returns a job_id; poll job_status to verify completion. Run only scripts from trusted sources.', inputSchema: { type: 'object', properties: { script: { type: 'string', maxLength: 20000 } }, required: ['script'], additionalProperties: false } },
-  { name: 'photopea_export', description: 'Queue export of currently open Photopea document. Use job_status for an authorized download URL when finished.', inputSchema: { type: 'object', properties: { format: { type: 'string', enum: ['psd', 'png', 'jpg'] } }, required: ['format'], additionalProperties: false } },
-  { name: 'job_status', description: 'Get the verified status and output of a previously queued Photopea job.', inputSchema: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'], additionalProperties: false } }
+function operationSchema(shape) { return z.strictObject({ ...shape, request_id: requestKey }); }
+
+const operationTools = [
+  ['photopea_open_document', 'Create a new RGB document, activate an exact open document name, open a small base64 PSD/PNG/JPG. Load large PSDs through the paired workspace. Poll job_status.',
+    z.discriminatedUnion('mode', [
+      operationSchema({ mode: z.literal('new'), name, width: z.number().int().min(1).max(12000),
+        height: z.number().int().min(1).max(12000), dpi: z.number().int().min(72).max(600).default(300),
+        background: z.enum(['white', 'transparent']).default('white') }),
+      operationSchema({ mode: z.literal('activate'), name }),
+      operationSchema({ mode: z.literal('asset'), name, format: z.enum(['psd', 'png', 'jpg']), base64 })
+    ])],
+  ['photopea_add_text', 'Add an editable point-text layer in the active document. x and y are the text anchor in canvas pixels, size is in Photopea text units (pixels), and rotation is in degrees. Poll job_status.',
+    operationSchema({ name, text, font: name.optional().describe('Use a Photopea/PostScript font name.'), x: coordinate, y: coordinate,
+      size: z.number().min(1).max(2000), color: z.string().regex(/^#[a-fA-F0-9]{6}$/).default('#202020'),
+      alignment: z.enum(['left', 'center', 'right']).default('left'), rotation: rotation.default(0) })],
+  ['photopea_place_image', 'Place a small PNG/JPG in the active document as an embedded editable Smart Object. x/y locate its visible upper left in pixels after scaling; 100 is unchanged scale. Poll job_status.',
+    operationSchema({ name, format: z.enum(['png', 'jpg']), base64, x: coordinate, y: coordinate, scale: scale.default(100) })],
+  ['photopea_manage_layers', 'List layers and editable text, rename, change visibility, replace text contents, reorder within a group, or translate, resize and rotate a layer. Paths contain exact layer/group names; list first. Scaling is percent about layer center, rotation is degrees, and translation is pixels. Poll job_status.',
+    z.discriminatedUnion('action', [
+      operationSchema({ action: z.literal('list') }), operationSchema({ action: z.literal('rename'), path: layerPath, name }),
+      operationSchema({ action: z.literal('visibility'), path: layerPath, visible: z.boolean() }),
+      operationSchema({ action: z.literal('text'), path: layerPath, text }),
+      operationSchema({ action: z.literal('transform'), path: layerPath, scale: scale.optional(), rotation: rotation.optional(), dx: coordinate.optional(), dy: coordinate.optional() }),
+      operationSchema({ action: z.literal('reorder'), path: layerPath, relative_to: layerPath, position: z.enum(['above', 'below']) })
+    ])],
+  ['photopea_run_script', 'Request execution of a Photopea scripting DOM command in the active paired browser. The workspace operator must approve the displayed script. Use typed tools for routine edits. Return a small JSON-serializable value to report results. Poll job_status.',
+    operationSchema({ script: z.string().trim().min(1).max(20000) })],
+  ['photopea_export', 'Export the active document as editable PSD, flattened PNG/JPG, or a single-page flattened RGB PDF. PDF uses the active document’s physical size and supports up to 18 megapixels. Download through the paired workspace or authenticated download URL. Poll job_status.',
+    z.discriminatedUnion('format', [
+      operationSchema({ format: z.literal('psd'), name: fileName }),
+      operationSchema({ format: z.literal('png'), name: fileName }),
+      operationSchema({ format: z.literal('jpg'), name: fileName, quality: z.number().min(0.1).max(1).default(0.95) }),
+      operationSchema({ format: z.literal('pdf'), name: fileName })
+    ])]
 ];
-function enqueue(kind, options) {
-  if (jobs.size >= MAX_JOBS) {
-    for (const [id, j] of jobs) { if (j.status === 'completed' || j.status === 'failed') { jobs.delete(id); if (jobs.size < MAX_JOBS) break; } }
-    if (jobs.size >= MAX_JOBS) throw new Error('Job queue full.');
-  }
-  const id = crypto.randomUUID();
-  const job = { id, kind, ...options, status: 'queued', created_at: new Date().toISOString(), messages: [], file_name: null, downloaded: false };
-  jobs.set(id, job);
-  dispatch();
-  return { job_id: id, status: job.status, bridge: statusInfo() };
+
+function result(value, isError = false) {
+  return { isError, content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value };
 }
-function dispatch() {
-  if (!workspaceReady || !workspace || workspace.readyState !== WebSocket.OPEN || activeId) return;
-  const job = [...jobs.values()].find(x => x.status === 'queued');
-  if (!job) return;
-  activeId = job.id;
-  job.status = 'running';
-  job.started_at = new Date().toISOString();
-  const script = job.kind === 'export' ? `app.activeDocument.saveToOE(${JSON.stringify(job.format)});` : job.script;
-  workspace.send(JSON.stringify({ type: 'run', job_id: job.id, script }));
+
+function toolsFor(bridge) {
+  const handler = createMcpHandler(() => {
+    const mcp = new McpServer({ name: 'photopea-cover-bridge', version }, {
+      instructions: 'Check bridge_status before editing. Poll job_status for each job. Only completed jobs confirm Photopea results. A paired workspace can download exports without adding credentials to chat.'
+    });
+    const register = (name, description, inputSchema, handler, annotations) => {
+      mcp.registerTool(name, {
+        description, inputSchema, annotations,
+        securitySchemes: [ownerScope], _meta: { securitySchemes: [ownerScope] }
+      }, args => {
+        try { return result(handler(args)); }
+        catch (error) { return result({ error: error.message }, true); }
+      });
+    };
+    const readOnly = { readOnlyHint: true, openWorldHint: false };
+    register('bridge_status', 'Report bridge health, browser pairing, editor responsiveness and command availability.', z.strictObject({}), bridge.status, readOnly);
+    register('job_status', 'Get a job state, error, confirmed result or private export download URL.', z.strictObject({ job_id: z.uuid() }), a => bridge.job(a.job_id), readOnly);
+    for (const [tool, description, schema] of operationTools) {
+      register(tool, description, schema, ({ request_id, ...args }) => {
+        return bridge.enqueue(tool, makeOperation(tool, args), request_id, args);
+      }, { readOnlyHint: false, destructiveHint: ['photopea_run_script', 'photopea_manage_layers'].includes(tool),
+        idempotentHint: false, openWorldHint: tool === 'photopea_run_script' });
+    }
+    return mcp;
+  }, { maxRequestBodySize: 3_000_000, maxSubscriptions: 4 });
+  return { handle: toNodeHandler(handler), close: () => handler.close() };
 }
-function jobView(job) {
-  const { script, messages, ...safe } = job;
-  return { ...safe, messages: messages.slice(-25), download_url: job.file_name ? `/download/${job.id}` : null, download_requires_bearer_token: !!job.file_name };
-}
-function getTool(name, args) {
-  try {
-    if (name === 'bridge_status') return resultTool(statusInfo());
-    if (name === 'job_status') {
-      const job = jobs.get(args.job_id);
-      if (!job) return resultTool({ error: 'Unknown job ID' }, true);
-      return resultTool(jobView(job));
-    }
-    if (name === 'photopea_run_script') {
-      if (typeof args.script !== 'string' || !args.script.trim() || args.script.length > 20000) return resultTool({ error: 'Script must be nonempty and <=20000 characters.' }, true);
-      return resultTool(enqueue('script', { script: args.script }));
-    }
-    if (name === 'photopea_export') {
-      if (!['psd','png','jpg'].includes(args.format)) return resultTool({ error: 'Unsupported export format' }, true);
-      return resultTool(enqueue('export', { format: args.format }));
-    }
-    return resultTool({ error: 'Unknown tool' }, true);
-  } catch (e) { return resultTool({ error: e.message }, true); }
-}
-function handleMcp(body) {
-  if (!body || body.jsonrpc !== '2.0') return error(body?.id ?? null, -32600, 'Invalid JSON-RPC request');
-  if (body.method === 'notifications/initialized') return null;
-  if (body.method === 'initialize') return success(body.id, { protocolVersion: body.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'photopea-cover-bridge', version: '0.2.0' } });
-  if (body.method === 'ping') return success(body.id, {});
-  if (body.method === 'tools/list') return success(body.id, { tools: schemas });
-  if (body.method === 'tools/call') return success(body.id, getTool(body.params?.name, body.params?.arguments || {}));
-  return error(body.id, -32601, 'Unknown method');
-}
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true, service: 'photopea-cover-bridge' });
-  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/workspace')) {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src https://www.photopea.com; connect-src 'self' wss: ws:; img-src 'self' data:" });
-    return fs.createReadStream(path.join(dir, 'public', 'workspace.html')).pipe(res);
+
+export async function createServer({
+  origin, token, ownerSecret = token, storage = join(directory, 'exports'), maxFile = 100_000_000, stepTimeout
+}) {
+  const base = new URL(origin);
+  if (base.origin !== origin || (base.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(base.hostname))) {
+    throw new Error('PUBLIC_ORIGIN requires a canonical HTTPS origin or a loopback HTTP origin.');
   }
-  if (req.method === 'GET' && url.pathname === '/workspace.js') {
-    res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
-    return fs.createReadStream(path.join(dir, 'public', 'workspace.js')).pipe(res);
+  if (typeof token !== 'string' || token.length < 32 || token.length > 512 || ownerSecret.length < 32 || ownerSecret.length > 512) {
+    throw new Error('Bridge and owner authorization keys must contain 32–512 characters.');
   }
-  if (url.pathname === '/mcp' && req.method === 'POST') {
-    if (!auth(req)) return send(res, 401, { error: 'Unauthorized' });
-    let raw = ''; for await (const piece of req) { raw += piece; if (raw.length > 100_000) return send(res, 413, { error: 'Request too large' }); }
-    try { const body = JSON.parse(raw); const out = handleMcp(body); if (!out) return send(res, 202, ''); return send(res, 200, out); }
-    catch { return send(res, 400, { error: 'Invalid JSON' }); }
+  if (!Number.isSafeInteger(maxFile) || maxFile < 1024 || maxFile > 100_000_000) {
+    throw new Error('MAX_FILE_BYTES must be between 1024 and 100000000.');
   }
-  if (url.pathname === '/mcp' && req.method === 'GET') return send(res, 405, { error: 'GET SSE sessions not supported; use POST Streamable HTTP.' }, { Allow: 'POST' });
-  if (req.method === 'GET' && url.pathname.startsWith('/download/')) {
-    if (!auth(req)) return send(res, 401, { error: 'Unauthorized' });
-    const id = url.pathname.split('/')[2], job = jobs.get(id);
-    if (!job?.file_name) return send(res, 404, { error: 'Export not found.' });
-    const filepath = path.join(storageDir, job.file_name);
-    if (!fs.existsSync(filepath)) return send(res, 404, { error: 'Export expired.' });
-    res.writeHead(200, { 'Content-Type': job.format === 'psd' ? 'image/vnd.adobe.photoshop' : job.format === 'png' ? 'image/png' : 'image/jpeg', 'Content-Disposition': `attachment; filename="${job.file_name}"`, 'Content-Length': fs.statSync(filepath).size, 'Cache-Control': 'no-store' });
-    return fs.createReadStream(filepath).pipe(res);
-  }
-  send(res, 404, { error: 'Not found' });
-});
-const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FILE + 1024 });
-server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  if (url.pathname !== '/socket') return socket.destroy();
-  const origin = req.headers.origin;
-  if (!origin || new URL(origin).host !== req.headers.host) return socket.destroy();
-  wss.handleUpgrade(req, socket, head, sock => wss.emit('connection', sock));
-});
-wss.on('connection', sock => {
-  let authorized = false;
-  sock.on('message', (raw, binary) => {
-    if (!authorized) {
-      if (binary) return sock.close(1008);
-      let obj; try { obj = JSON.parse(String(raw)); } catch { return sock.close(1008); }
-      const a = Buffer.from(String(obj.token || '')), b = Buffer.from(token);
-      if (obj.type !== 'hello' || a.length !== b.length || !crypto.timingSafeEqual(a,b)) return sock.close(1008, 'Bad key');
-      authorized = true;
-      if (workspace && workspace !== sock) workspace.close(1000, 'New workspace connected');
-      workspace = sock; workspaceReady = false; activeId = null;
-      for (const j of jobs.values()) if (j.status === 'running') { j.status = 'queued'; j.messages.push('Previous workspace disconnected; job will be retried.'); }
-      sock.send(JSON.stringify({ type: 'authenticated', status: 'Connected. Waiting for Photopea to finish loading.' }));
-      return;
-    }
-    if (sock !== workspace) return;
-    if (binary) {
-      const job = jobs.get(activeId);
-      if (!job || job.kind !== 'export') return;
-      if (raw.length > MAX_FILE) { job.status = 'failed'; job.error = 'Export exceeds MAX_FILE_BYTES'; return; }
-      const ext = job.format === 'jpg' ? 'jpg' : job.format;
-      const filename = `${job.id}.${ext}`;
-      fs.writeFileSync(path.join(storageDir, filename), raw);
-      job.file_name = filename;
-      job.bytes = raw.length;
-      return;
-    }
-    let obj; try { obj = JSON.parse(String(raw)); } catch { return; }
-    if (obj.type === 'photopea_ready') { workspaceReady = true; dispatch(); return; }
-    const job = jobs.get(activeId);
-    if (!job || obj.job_id !== activeId) return;
-    if (obj.type === 'message') {
-      if (typeof obj.value === 'string' && job.messages.length < 100) job.messages.push(obj.value.slice(0,4000));
-    } else if (obj.type === 'complete') {
-      if (job.status === 'failed') {} else if (job.kind === 'export' && !job.file_name) { job.status = 'failed'; job.error = 'No exported data received'; }
-      else job.status = 'completed';
-      job.completed_at = new Date().toISOString();
-      activeId = null; dispatch();
-    } else if (obj.type === 'failed') {
-      job.status = 'failed'; job.error = String(obj.error || 'Browser error').slice(0,1000); job.completed_at = new Date().toISOString(); activeId = null; dispatch();
+
+  const html = await readFile(join(directory, 'workspace.html'), 'utf8');
+  const script = await readFile(join(directory, 'workspace.js'), 'utf8');
+  const oauth = createOAuth({ origin, ownerSecret, signingKey: token });
+  const server = http.createServer({ requestTimeout: 20_000, headersTimeout: 10_000 }, async (req, res) => {
+    try {
+      if (!req.url?.startsWith('/') || req.url.startsWith('//') || req.headers.host !== base.host) {
+        return send(res, 400, { error: 'Invalid request host.' });
+      }
+      const url = new URL(req.url, origin);
+      const { pathname } = url;
+      if (req.method === 'GET' && pathname === '/health') {
+        return send(res, 200, { ok: true, service: 'photopea-cover-bridge', version });
+      }
+      if (req.method === 'GET' && ['/', '/workspace', '/workspace.js'].includes(pathname)) {
+        const htmlPage = pathname !== '/workspace.js';
+        return send(res, 200, htmlPage ? html : script, {
+          'Content-Type': htmlPage ? 'text/html; charset=utf-8' : 'text/javascript; charset=utf-8',
+          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; frame-src https://www.photopea.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+        });
+      }
+      if (pathname.startsWith('/oauth/') || (req.method === 'GET' && pathname.startsWith('/.well-known/oauth-'))) {
+        return await oauth.handle(req, res, url);
+      }
+      if (pathname === '/mcp' || (req.method === 'GET' && pathname.startsWith('/download/'))) {
+        const headerOrigin = req.headers.origin;
+        if (headerOrigin && headerOrigin !== origin) return send(res, 403, { error: 'Origin is not allowed.' });
+        const bearer = req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1];
+        const oldToken = bearer || req.headers['x-api-key'];
+        if (!(matches(oldToken, token) || oauth.verify(bearer))) {
+          return send(res, 401, { error: 'Unauthorized' }, { 'WWW-Authenticate': oauth.challenge });
+        }
+        if (pathname === '/mcp') {
+          res.setHeader('Cache-Control', 'no-store');
+          return await mcp.handle(req, res);
+        }
+        return bridge.download(pathname.slice('/download/'.length), res);
+      }
+      return send(res, 404, { error: 'Not found' });
+    } catch (error) {
+      if (res.headersSent) return res.destroy();
+      send(res, error.status ?? 500, { error: error.status ? error.message : 'Bridge request failed.' });
     }
   });
-  sock.on('close', () => {
-    if (workspace !== sock) return;
-    workspace = null; workspaceReady = false;
-    if (activeId) { const job = jobs.get(activeId); if (job && job.status === 'running') { job.status = 'queued'; job.messages.push('Connection lost before completion.'); } }
-    activeId = null;
+
+  const bridge = await createBridge(server, { origin, token, storage, maxFile, stepTimeout });
+  const mcp = toolsFor(bridge);
+  server.on('close', () => { bridge.close(); void mcp.close(); });
+  return { server, bridge };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const port = Number(process.env.PORT ?? 3000);
+  const origin = process.env.PUBLIC_ORIGIN || process.env.RENDER_EXTERNAL_URL || 'http://localhost:' + port;
+  const { server, bridge } = await createServer({
+    origin, token: process.env.BRIDGE_TOKEN, ownerSecret: process.env.MCP_OWNER_KEY,
+    storage: process.env.STORAGE_DIR, maxFile: Number(process.env.MAX_FILE_BYTES ?? 100_000_000)
   });
-});
-server.listen(port, '0.0.0.0', () => console.log(`Photopea bridge listening on ${port}; open /workspace in a browser.`));
+  server.listen(port, '0.0.0.0', () => console.log('Photopea bridge ' + version + ' listening.'));
+  process.once('SIGTERM', () => { bridge.close(); server.close(); });
+}

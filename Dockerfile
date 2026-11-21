@@ -1,10 +1,9 @@
 FROM node:22-alpine
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev
-COPY server.mjs ./
-RUN mkdir -p public
-COPY workspace.html workspace.js ./public/
-ENV PORT=3000
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY server.mjs bridge.mjs oauth.mjs photopea.mjs pdf.mjs workspace.html workspace.js ./
+USER node
+ENV PORT=3000 STORAGE_DIR=/tmp/photopea-exports
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["node", "server.mjs"]
