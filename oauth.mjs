@@ -141,14 +141,16 @@ export function createOAuth({ origin, ownerSecret, signingKey }) {
       { 'Set-Cookie': cookie(nonce) + '; Max-Age=300' });
     }
     if (pathname === '/oauth/authorize' && req.method === 'POST') {
+      const contentType = req.headers['content-type']?.toLowerCase() || '';
+      const isForm = /^application\/x-www-form-urlencoded(?:\s*;|$)/.test(contentType);
       const postOrigin = req.headers.origin;
-      // Browser Fetch Metadata is forbidden to scripts and gives a reliable
-      // same-origin signal even when privacy settings omit the Origin header.
-      const sameOrigin = postOrigin === origin ||
-        (!postOrigin && req.headers['sec-fetch-site'] === 'same-origin');
-      if (!sameOrigin || !req.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) {
-        // Log only a rejection category. Never log POST bodies, secrets or codes.
-        console.warn('[photopea-oauth] consent rejected: request origin or content type');
+      const fetchSite = req.headers['sec-fetch-site'];
+      const originKind = postOrigin === origin ? 'same'
+        : postOrigin === undefined ? 'absent'
+          : postOrigin === 'null' ? 'opaque' : 'different';
+      const fetchSiteKind = ['same-origin', 'same-site', 'cross-site', 'none'].includes(fetchSite) ? fetchSite : 'absent-or-other';
+      if (!isForm) {
+        console.warn('[photopea-oauth] consent rejected: content type', contentType ? 'unsupported' : 'missing');
         return fail(res, 'invalid_request', 403);
       }
       const form = new URLSearchParams(await readBody(req, 4096));
@@ -158,20 +160,29 @@ export function createOAuth({ origin, ownerSecret, signingKey }) {
         console.warn('[photopea-oauth] consent rejected: flow expired or absent');
         return html(res, 400, '<h1>Authorization expired</h1><p>Return to ChatGPT and start the Photopea connection again to get a fresh authorization page.</p>');
       }
+      // A matching HttpOnly cookie, Fetch Metadata, or exact Origin proves a
+      // same-origin browser submission. The one-use random flow token also
+      // prevents blind CSRF form posts. Never accept an explicitly foreign Origin
+      // or cross-site Fetch Metadata, even if another signal matches.
       const nonce = req.headers.cookie?.split(';').map(item => item.trim())
         .find(item => item.startsWith(cookieName + '='))?.slice(cookieName.length + 1);
-      if (nonce && !matches(grant.nonce, digest(nonce))) {
+      const cookieMatches = !!nonce && matches(grant.nonce, digest(nonce));
+      if (nonce && !cookieMatches) {
         console.warn('[photopea-oauth] consent rejected: session cookie mismatch');
         return fail(res, 'invalid_request', 403);
       }
-      if (!nonce && req.headers['sec-fetch-site'] !== 'same-origin') {
-        // Brave and other privacy-focused browsers can omit a first-party cookie.
-        // Allow a cookie-free submission only for a browser-confirmed same-origin
-        // request holding the unguessable, short-lived single-use flow token.
-        console.warn('[photopea-oauth] consent rejected: missing browser cookie');
-        return html(res, 403, '<h1>Authorization session unavailable</h1><p>Allow cookies for this site and restart authorization from ChatGPT.</p>');
+      const foreignOrigin = postOrigin && postOrigin !== origin && postOrigin !== 'null';
+      const crossSite = fetchSite === 'cross-site';
+      const browserSameOrigin = postOrigin === origin || fetchSite === 'same-origin';
+      const cookieFallback = cookieMatches && (postOrigin === undefined || postOrigin === 'null');
+      if (foreignOrigin || crossSite || !(browserSameOrigin || cookieFallback)) {
+        console.warn('[photopea-oauth] consent rejected: origin validation', {
+          origin: originKind, fetch_site: fetchSiteKind, cookie: cookieMatches ? 'verified' : 'absent'
+        });
+        return html(res, 403, '<h1>Authorization request rejected</h1><p>Return to ChatGPT and start authorization again. The browser did not provide a valid same-origin request.</p>');
       }
-      if (!nonce) console.info('[photopea-oauth] same-origin consent using cookie-free flow fallback');
+      if (!nonce) console.info('[photopea-oauth] accepted verified origin without browser cookie');
+      if (cookieFallback && !browserSameOrigin) console.info('[photopea-oauth] accepted verified browser cookie without origin metadata');
       if (form.get('decision') !== 'deny') {
         if (Date.now() < blockedUntil) return html(res, 429, '<h1>Try again in one minute</h1>');
         if (form.get('decision') !== 'allow' || !matches(form.get('key'), ownerSecret)) {

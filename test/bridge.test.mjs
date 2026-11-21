@@ -225,7 +225,10 @@ for (const native of [false, true]) {
     const flow = (await consent.text()).match(/name="flow" value="([^"]+)"/)[1];
     const form = new URLSearchParams({ flow, key: token, decision: 'allow' });
     const authCookie = consent.headers.get('set-cookie').split(';')[0];
-    assert.equal((await fetch(issuer.authorization_endpoint, { method: 'POST', body: form, headers: { Origin: origin } })).status, 403);
+    // Reject an explicitly foreign Origin, even when a valid flow exists.
+    assert.equal((await fetch(issuer.authorization_endpoint, {
+      method: 'POST', body: form, headers: { Origin: 'https://attacker.invalid' }
+    })).status, 403);
     const redirect = await fetch(issuer.authorization_endpoint, {
       method: 'POST', redirect: 'manual', body: form, headers: { Origin: origin, Cookie: authCookie }
     });
@@ -262,6 +265,32 @@ for (const native of [false, true]) {
       body: new URLSearchParams({ flow: noOriginFlow, key: token, decision: 'allow' }),
       headers: { 'Sec-Fetch-Site': 'same-origin' }
     })).status, 303);
+    // Brave may produce an opaque Origin but still supply reliable same-origin
+    // Fetch Metadata. That combination can be approved without a cookie.
+    const opaquePage = await fetch(issuer.authorization_endpoint + '?' + query);
+    const opaqueFlow = (await opaquePage.text()).match(/name="flow" value="([^"]+)"/)[1];
+    assert.equal((await fetch(issuer.authorization_endpoint, {
+      method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ flow: opaqueFlow, key: token, decision: 'allow' }),
+      headers: { Origin: 'null', 'Sec-Fetch-Site': 'same-origin' }
+    })).status, 303);
+    // When privacy features strip both Origin and Fetch Metadata, the valid
+    // first-party session cookie plus unguessable flow token still suffice.
+    const cookiePage = await fetch(issuer.authorization_endpoint + '?' + query);
+    const cookieFlow = (await cookiePage.text()).match(/name="flow" value="([^"]+)"/)[1];
+    assert.equal((await fetch(issuer.authorization_endpoint, {
+      method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ flow: cookieFlow, key: token, decision: 'allow' }),
+      headers: { Cookie: cookiePage.headers.get('set-cookie').split(';')[0] }
+    })).status, 303);
+    // Never permit a reported cross-site submission even with a valid cookie.
+    const crossPage = await fetch(issuer.authorization_endpoint + '?' + query);
+    const crossFlow = (await crossPage.text()).match(/name="flow" value="([^"]+)"/)[1];
+    assert.equal((await fetch(issuer.authorization_endpoint, {
+      method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ flow: crossFlow, key: token, decision: 'allow' }),
+      headers: { Cookie: crossPage.headers.get('set-cookie').split(';')[0], 'Sec-Fetch-Site': 'cross-site' }
+    })).status, 403);
     function exchange(body) {
       return fetch(issuer.token_endpoint, { method: 'POST', body: new URLSearchParams({ client_id, ...target, ...body }) });
     }
