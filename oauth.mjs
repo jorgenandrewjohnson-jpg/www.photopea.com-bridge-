@@ -141,12 +141,37 @@ export function createOAuth({ origin, ownerSecret, signingKey }) {
       { 'Set-Cookie': cookie(nonce) + '; Max-Age=300' });
     }
     if (pathname === '/oauth/authorize' && req.method === 'POST') {
-      if (req.headers.origin !== origin || !req.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) return fail(res, 'invalid_request', 403);
+      const postOrigin = req.headers.origin;
+      // Browser Fetch Metadata is forbidden to scripts and gives a reliable
+      // same-origin signal even when privacy settings omit the Origin header.
+      const sameOrigin = postOrigin === origin ||
+        (!postOrigin && req.headers['sec-fetch-site'] === 'same-origin');
+      if (!sameOrigin || !req.headers['content-type']?.startsWith('application/x-www-form-urlencoded')) {
+        // Log only a rejection category. Never log POST bodies, secrets or codes.
+        console.warn('[photopea-oauth] consent rejected: request origin or content type');
+        return fail(res, 'invalid_request', 403);
+      }
       const form = new URLSearchParams(await readBody(req, 4096));
       const key = form.get('flow');
       const grant = read(pending, key);
-      const nonce = req.headers.cookie?.split('; ').find(item => item.startsWith(cookieName + '='))?.slice(cookieName.length + 1);
-      if (!grant || !nonce || !matches(grant.nonce, digest(nonce))) return fail(res, 'invalid_request', 403);
+      if (!grant) {
+        console.warn('[photopea-oauth] consent rejected: flow expired or absent');
+        return html(res, 400, '<h1>Authorization expired</h1><p>Return to ChatGPT and start the Photopea connection again to get a fresh authorization page.</p>');
+      }
+      const nonce = req.headers.cookie?.split(';').map(item => item.trim())
+        .find(item => item.startsWith(cookieName + '='))?.slice(cookieName.length + 1);
+      if (nonce && !matches(grant.nonce, digest(nonce))) {
+        console.warn('[photopea-oauth] consent rejected: session cookie mismatch');
+        return fail(res, 'invalid_request', 403);
+      }
+      if (!nonce && req.headers['sec-fetch-site'] !== 'same-origin') {
+        // Brave and other privacy-focused browsers can omit a first-party cookie.
+        // Allow a cookie-free submission only for a browser-confirmed same-origin
+        // request holding the unguessable, short-lived single-use flow token.
+        console.warn('[photopea-oauth] consent rejected: missing browser cookie');
+        return html(res, 403, '<h1>Authorization session unavailable</h1><p>Allow cookies for this site and restart authorization from ChatGPT.</p>');
+      }
+      if (!nonce) console.info('[photopea-oauth] same-origin consent using cookie-free flow fallback');
       if (form.get('decision') !== 'deny') {
         if (Date.now() < blockedUntil) return html(res, 429, '<h1>Try again in one minute</h1>');
         if (form.get('decision') !== 'allow' || !matches(form.get('key'), ownerSecret)) {

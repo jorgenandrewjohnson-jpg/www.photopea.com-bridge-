@@ -234,6 +234,34 @@ for (const native of [false, true]) {
     assert.equal(redirectUrl.searchParams.get('iss'), origin);
     assert.equal(redirectUrl.searchParams.get('state'), 'csrf-state');
     assert.equal(redirectUrl.origin + redirectUrl.pathname, uri);
+    // Some privacy browsers omit first-party cookies. An unguessable flow
+    // token plus trusted same-origin Fetch Metadata permits consent safely.
+    const consentWithoutCookies = await fetch(issuer.authorization_endpoint + '?' + query);
+    assert.equal(consentWithoutCookies.status, 200);
+    const cookieFreeFlow = (await consentWithoutCookies.text()).match(/name="flow" value="([^"]+)"/)[1];
+    const cookieFreeForm = new URLSearchParams({ flow: cookieFreeFlow, key: token, decision: 'allow' });
+    const cookieFreePost = await fetch(issuer.authorization_endpoint, {
+      method: 'POST', redirect: 'manual', body: cookieFreeForm,
+      headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin' }
+    });
+    assert.equal(cookieFreePost.status, 303);
+    // A foreign-origin form submission must fail even with same-origin metadata.
+    const forgedConsent = await fetch(issuer.authorization_endpoint + '?' + query);
+    const forgedFlow = (await forgedConsent.text()).match(/name="flow" value="([^"]+)"/)[1];
+    const forgedPost = await fetch(issuer.authorization_endpoint, {
+      method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ flow: forgedFlow, key: token, decision: 'allow' }),
+      headers: { Origin: 'https://attacker.invalid', 'Sec-Fetch-Site': 'same-origin' }
+    });
+    assert.equal(forgedPost.status, 403);
+    // A browser with no Origin can still report a protected same-origin request.
+    const noOriginConsent = await fetch(issuer.authorization_endpoint + '?' + query);
+    const noOriginFlow = (await noOriginConsent.text()).match(/name="flow" value="([^"]+)"/)[1];
+    assert.equal((await fetch(issuer.authorization_endpoint, {
+      method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ flow: noOriginFlow, key: token, decision: 'allow' }),
+      headers: { 'Sec-Fetch-Site': 'same-origin' }
+    })).status, 303);
     function exchange(body) {
       return fetch(issuer.token_endpoint, { method: 'POST', body: new URLSearchParams({ client_id, ...target, ...body }) });
     }
