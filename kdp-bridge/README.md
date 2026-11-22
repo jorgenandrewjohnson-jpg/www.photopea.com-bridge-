@@ -1,5 +1,16 @@
 # Brave KDP publishing bridge
 
+## Version 0.3.2: video-driven safety hardening (source only until deployed)
+
+The 2026-11-22 screen recording revealed absent covers, disabled Previewer controls, a macOS file picker that was not evidence of upload acceptance, and an unsaved-changes dialog on a NEW paperback page. The bridge now returns a conservative `content_state` object when inspecting KDP Content pages, blocks cover-upload mode changes and cover replacement when an existing cover is detected **or cover status cannot be established**, reports saving/unsaved conditions, and classifies upload observations without treating browser transfer as Amazon acceptance. If Amazon's content signals conflict, cover protection fails closed.
+
+The native PDF helper now responds to malformed JSON without crashing. New regression tests and `.github/workflows/kdp-bridge-tests.yml` cover these cases. A passing CI and a successful live browser upload/preview remain necessary before calling this version production-verified.
+
+**Install/update without replacing your extension:** The existing Mac updater fetches v0.3.2 scripts and the native helper into the same unpacked extension directory and backs up the earlier scripts. Run its updater **only after reviewing and obtaining the current source**; reload the existing extension at `brave://extensions`. Do not select Remove or Load unpacked again. Preserve pairing. The running Render service must be separately updated from the correct `kdp-browser-bridge` deployment target and should report v0.3.2 after deployment. Do not redeploy the separate Photopea Render service.
+
+**Important:** Existing cover protection intentionally prevents unattended replacement. To replace an existing cover in a future release, implement a separate exact-edition confirmation backed by a before/after snapshot and regression test. Do not bypass this guard by clearing the cover or switching modes silently. Amazon acceptance and full Previewer approval are still read-only observations and may require user review.
+
+
 ## Version 0.3.1: PDF filename validation and larger-file support
 
 The KDP bridge registers `kdp_stage_file` (refresh the ChatGPT app's MCP tool inventory if it is missing even when Render is live). The 0.3.1 extension corrects PDF filename validation so paths ending in `.pdf` are accepted. The native helper and bridge now accept PDFs up to 250 MiB and use 256 KiB chunks. The KDP bridge now exposes `kdp_stage_file` for PDFs directly in the Mac owner's `~/Desktop` or `~/Downloads`. It requires explicit one-time native messaging host installation and does **not** grant filesystem access to Render or ChatGPT. The native helper permits read-only access to ordinary PDF files directly in those two folders, refuses symlinks and other folders, validates PDF headers, limits files to 250 MiB, and returns bounded chunks. Installing the helper is a trust decision: the paired bridge can thereafter stage eligible PDF files from these folders for the authenticated edition. Files are staged inside Brave, not permanently uploaded to Render.
