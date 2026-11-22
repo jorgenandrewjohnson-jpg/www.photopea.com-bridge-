@@ -1,4 +1,4 @@
-import {route,openable,bridgeOrigin} from './policy.js';
+import {route,openable,bridgeOrigin,isPdfPath} from './policy.js';
 import {getFile,listFiles,stage} from './files.js';
 let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
 const uploads=new Map();
@@ -103,7 +103,7 @@ async function stageNative(a) {
   if (page.stage!=='content' || page.edition!==a.edition ||
       page.edition_id!==a.edition_id || page.edition_id==='new')
     throw Error('Select the exact saved edition Content tab before staging');
-  if (!['manuscript','cover'].includes(a.kind) || !/\\.pdf$/i.test(a.path))
+  if (!['manuscript','cover'].includes(a.kind) || !isPdfPath(a.path))
     throw Error('Only PDFs for manuscript or cover are accepted');
   let port;
   const waiters = new Map();
@@ -128,11 +128,11 @@ async function stageNative(a) {
       waiters.clear();
     });
     const info=await ask('stat');
-    if (!info.size || info.size>80*1024*1024 || !info.name?.toLowerCase().endsWith('.pdf'))
+    if (!info.size || info.size>250*1024*1024 || !info.name?.toLowerCase().endsWith('.pdf'))
       throw Error('Invalid local PDF');
     const chunks=[];
-    for(let offset=0;offset<info.size;offset+=128*1024) {
-      const count=Math.min(128*1024,info.size-offset);
+    for(let offset=0;offset<info.size;offset+=256*1024) {
+      const count=Math.min(256*1024,info.size-offset);
       const part=await ask('read',{offset,count,size:info.size,mtime_ns:info.mtime_ns});
       const raw=atob(part.data);
       const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));
@@ -156,7 +156,7 @@ async function upload(a) {
   uploads.set(id,progress);
   await inPage(a,'upload_begin',{...a,...metadata,id});
   try {
-    const chunk=96*1024;
+    const chunk=256*1024;
     for(let at=0;at<file.size;at+=chunk) {
       if (!paired) throw Error('Disconnected before transfer finished');
       const bytes=new Uint8Array(await file.slice(at,at+chunk).arrayBuffer());

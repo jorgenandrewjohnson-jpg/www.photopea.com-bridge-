@@ -12,8 +12,8 @@ from pathlib import Path
 import struct
 import sys
 
-MAX_FILE = 80 * 1024 * 1024
-CHUNK = 128 * 1024
+MAX_FILE = 250 * 1024 * 1024
+CHUNK = 256 * 1024
 HOME = Path.home().resolve()
 ROOTS = tuple((HOME / name).resolve() for name in ('Desktop', 'Downloads'))
 
@@ -36,7 +36,7 @@ def location(value):
         raise ValueError('The PDF must be directly on Desktop or in Downloads')
     st = resolved.stat()
     if st.st_size <= 0 or st.st_size > MAX_FILE:
-        raise ValueError('PDF is empty or exceeds the 80-MiB limit')
+        raise ValueError('PDF is empty or exceeds the 250-MiB limit')
     with resolved.open('rb') as stream:
         if stream.read(5) != b'%PDF-':
             raise ValueError('Selected file is not a valid PDF header')
@@ -46,7 +46,7 @@ def location(value):
 def handle(a):
     action = a.get('action')
     if action == 'health':
-        return {'ok': True, 'version': '0.3.0'}
+        return {'ok': True, 'version': '0.3.1'}
     path, st = location(a.get('path'))
     if action == 'stat':
         return {'ok': True, 'name': path.name, 'size': st.st_size,

@@ -21,7 +21,7 @@ export async function stage(file,page,kind) {
   if (!page?.edition_id || page.edition_id==='new' || page.stage!=='content' || !['cover','manuscript'].includes(kind)) throw Error('Select the saved edition’s Content page first');
   const ext=file.name.split('.').pop().toLowerCase();
   const extensions=kind==='cover'?['pdf','jpg','jpeg','tif','tiff','png']:['pdf','epub','docx','doc','kpf','rtf','txt'];
-  if (!file.size || file.size>80*1024*1024 || !extensions.includes(ext)) throw Error('Unsupported or empty file, or file exceeds 80 MiB');
+  if (!file.size || file.size>250*1024*1024 || !extensions.includes(ext)) throw Error('Unsupported or empty file, or file exceeds 250 MiB');
   const digest=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());
   const sha256=Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('');
   const record={id:crypto.randomUUID(),name:file.name,size:file.size,mime:file.type,kind,edition:page.edition,edition_id:page.edition_id,sha256,file};

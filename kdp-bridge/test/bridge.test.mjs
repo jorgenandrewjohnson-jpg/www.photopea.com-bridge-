@@ -6,7 +6,14 @@ import {once} from 'node:events';
 import {spawn} from 'node:child_process';
 import {WebSocket} from 'ws';
 import {connectClient} from './client.mjs';
-import {route,openable,bridgeOrigin} from '../extension/policy.js';
+import {route,openable,bridgeOrigin,isPdfPath} from '../extension/policy.js';
+test('local PDF staging extension check accepts a normal PDF pathname',()=>{
+  assert.equal(isPdfPath('/Users/jorgen/Desktop/Corinthians_Joel_6x9_Images_Aligned_REVIEW.pdf'),true);
+  assert.equal(isPdfPath('/Users/jorgen/Downloads/Hardcover.PDF'),true);
+  for (const pathname of ['/Users/jorgen/Desktop/book.pdf.exe','/Users/jorgen/Desktop/book','',null,{}]) {
+    assert.equal(isPdfPath(pathname),false);
+  }
+});
 test('publishing routes and sanitized identity',()=>{
   const path='https://kdp.amazon.com/en_US/title-setup/paperback/AB123/content';
   assert.equal(route(path+'?secret=opaque').path,path);

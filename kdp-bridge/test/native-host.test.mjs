@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp, mkdir, writeFile, symlink, rm} from 'node:fs/promises';
+import {mkdtemp, mkdir, writeFile, symlink, rm, truncate} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -31,10 +31,14 @@ test('native PDF host reads only explicitly allowed Desktop PDFs in bounded chun
       size:stat.size,mtime_ns:stat.mtime_ns},home);
     assert.equal(read.ok,true);
     assert.equal(Buffer.from(read.data,'base64').toString(),'%PDF-1.7 TEST');
-    assert.equal(message({action:'read',path:file,offset:0,count:131073,
+    assert.equal(message({action:'read',path:file,offset:0,count:262145,
       size:stat.size,mtime_ns:stat.mtime_ns},home).ok,false);
     assert.equal(message({action:'read',path:file,offset:0,count:1,
       size:stat.size,mtime_ns:'0'},home).ok,false);
+    const oversized=join(home,'Desktop','too-large.pdf');
+    await writeFile(oversized,'%PDF-1.7');
+    await truncate(oversized,250*1024*1024+1);
+    assert.equal(message({action:'stat',path:oversized},home).ok,false);
     const privateFile=join(home,'Documents','private.pdf');
     await writeFile(privateFile,'secret');
     assert.equal(message({action:'stat',path:privateFile},home).ok,false);

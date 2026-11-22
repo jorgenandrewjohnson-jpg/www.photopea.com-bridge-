@@ -25,3 +25,6 @@ export function bridgeOrigin(value) {
   if ((!local && !(u.protocol === 'https:' && /^[a-z0-9-]+\.onrender\.com$/.test(u.hostname) && !u.port)) || u.origin !== value) throw Error('Enter the exact Render HTTPS origin or a loopback test origin');
   return u.origin;
 }
+
+// Filename precheck only; the native host independently enforces path allowlists.
+export const isPdfPath = value => typeof value === 'string' && /\.pdf$/i.test(value);
