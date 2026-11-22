@@ -41,7 +41,7 @@ test('OAuth discovery, MCP calls, enrollment, single-browser ownership and disco
   t.after(()=>proc.kill());await once(proc.stdout,'data');
   const denied=await fetch(origin+'/mcp');assert.equal(denied.status,401);assert.match(denied.headers.get('www-authenticate'),/resource_metadata/);
   const client=await connectClient(origin,key);t.after(()=>client.close());
-  const defs=await client.listTools();assert.equal(defs.tools.length,13);
+  const defs=await client.listTools();assert.equal(defs.tools.length,15);
   const call=(name,args={})=>client.callTool({name,arguments:args});
   assert.equal(JSON.parse((await call('kdp_bridge_status')).content[0].text).paired,false);
   assert.equal((await call('kdp_click',{})).isError,true);
