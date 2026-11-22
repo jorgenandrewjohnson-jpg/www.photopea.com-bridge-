@@ -19,19 +19,52 @@
     if (/^(next|previous|back)/i.test(name)) return ['cover_creator','previewer','bookshelf'].includes(stage);
     return ordinary.test(name);
   };
+  // Discover actual controls, not just a short English button-label list.
+  // Publishing, purchases, destructive account actions and external links stay
+  // excluded; publication requires the separate owner-confirmed tool.
+  const excluded = /(?:publish|place order|order proof|request proof|buy now|delete|remove book|sign out|log out|cancel account|payment method|bank account|tax information|delete title)/i;
+  function allElements() {
+    const found=[];
+    const walk=root=>{
+      for (const el of root.querySelectorAll('*')) {
+        if (el.matches('input,select,textarea,[contenteditable=true],button,a,[role=button],[role=radio],[role=checkbox],[role=tab]')) found.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    };
+    walk(document);
+    return found;
+  }
+  function fileKind(el,p) {
+    if (p.stage!=='content' || p.edition_id==='new') return null;
+    const own=identity(el)+' '+(el.getAttribute('accept')||'');
+    const nearby=normal(el.closest('section,fieldset,[class*=upload],.a-box')?.innerText||el.parentElement?.parentElement?.innerText||'').slice(0,600).toLowerCase();
+    if (/cover/i.test(own) || /book cover|cover file|upload your cover/i.test(nearby)) return 'cover';
+    if (/manuscript|interior|book content/i.test(own) || /manuscript|upload your manuscript|interior/i.test(nearby)) return 'manuscript';
+    const inputs=allElements().filter(x=>x.matches('input[type=file]'));
+    if(inputs.length===2) return inputs.indexOf(el)===0?'manuscript':'cover';
+    return null;
+  }
   function capability(el,p) {
     if (el.matches(':disabled,[aria-disabled="true"]') || el.readOnly) return;
+    if(el.matches('input[type=file]')) return fileKind(el,p);
+    if(!visible(el)) return;
     const name=label(el);
-    if (el.matches('input[type=file]') && p.stage==='content') {
-      if (/cover/i.test(identity(el))) return 'cover';
-      if (/interior|manuscript/i.test(identity(el))) return 'manuscript';
-      return;
+    if(publication.test(name)) return ['pricing','rights-and-pricing'].includes(p.stage)?'publish':undefined;
+    if(excluded.test(name)) return;
+    if(el.matches('input[type=password],input[autocomplete=one-time-code]')) return;
+    if(el.matches('textarea,select,[contenteditable=true],input:not([type]),input[type=text],input[type=number],input[type=search]')) {
+      if(['details','content','series','cover_creator','pricing','rights-and-pricing'].includes(p.stage)) return 'fill';
     }
-    if (!visible(el)) return;
-    if (el.matches('input[type=text],input:not([type]),textarea,select,[contenteditable=true]') && ['details','series','cover_creator'].includes(p.stage) && allowedField.test(identity(el))) return 'fill';
-    if (!el.matches('button,a,[role=button],input[type=submit],input[type=button]')) return;
-    if (publication.test(name) && positiveStage(name,p.stage)) return 'publish';
-    if (ordinary.test(name) && positiveStage(name,p.stage)) return 'click';
+    if(el.matches('input[type=radio],input[type=checkbox],[role=radio],[role=checkbox]')) {
+      if(['details','content','pricing','rights-and-pricing','cover_creator'].includes(p.stage)) return 'click';
+    }
+    if(el.matches('button,[role=button],[role=tab],a,input[type=submit],input[type=button]')) {
+      const href=el.getAttribute('href');
+      if(href && (href.startsWith('javascript:') || (href.startsWith('http') && !/^https:\/\/(?:kdp\.amazon\.com|cc\.amazon\.com)\//.test(href)))) return;
+      if(!name || name.length>200) return;
+      if(/(?:checkout|account|order|payment|cart|buy)/i.test(name)) return;
+      return 'click';
+    }
   }
   function safeText(value) {
     return (value || '').replace(/https?:\/\/[^\s<>]+/gi,'[link]').replace(/\b[\w-]{48,}\b/g,'[redacted]');
@@ -55,13 +88,13 @@
     if (op==='inspect') {
       controls.clear();
       const list=[];
-      for (const el of document.querySelectorAll('input,select,textarea,[contenteditable=true],button,a,[role=button]')) {
+      for (const el of allElements()) {
         const kind=capability(el,p);
         if (!kind) continue;
         const id=crypto.randomUUID(), name=label(el);
         controls.set(id,{el,label:name,href:location.href});
-        const row=el.closest('tr,[data-title-id],.a-box');
-        list.push({control_id:id,kind,label:safeText(name),context:safeText(row?.innerText).slice(0,280),...(kind==='fill'?{value:safeText(el.value ?? el.innerText).slice(0,1200)}:{})});
+        const row=el.closest('tr,fieldset,section,[data-title-id],.a-box');
+        list.push({control_id:id,kind,label:safeText(name),context:safeText(row?.innerText).slice(0,280),...(kind==='fill'?{value:safeText(el.value ?? el.innerText).slice(0,1200),options:el.tagName==='SELECT'?[...el.options].map(o=>({value:o.value,label:normal(o.textContent),selected:o.selected})).slice(0,100):undefined}:{}) ,...(kind==='click' && el.matches('input[type=radio],input[type=checkbox],[role=radio],[role=checkbox]')?{checked:el.checked??el.getAttribute('aria-checked')==='true',value:el.value??null}:{})});
       }
       return {title:safeText(document.title),page:p,controls:list,alerts:alerts().map(safeText),text:safeText(document.body.innerText).slice(0,28000)};
     }
@@ -70,7 +103,7 @@
     if (op==='click') {
       const el=getControl(a,p,'click');
       el.click();
-      return {dispatched:true,confirmation:'Inspect the destination and Amazon status.'};
+      return {dispatched:true,checked:el.checked??null,confirmation:'Inspect the destination and Amazon status.'};
     }
     if (op==='fill') {
       const el=getControl(a,p,'fill');
