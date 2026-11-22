@@ -1,5 +1,19 @@
 # Brave KDP publishing bridge
 
+## Version 0.3.3: direct ChatGPT-to-Brave PDF receiving (requires deployment)
+
+This release adds two MCP commands:
+
+- `kdp_receive_file`: start a transfer using `action:"begin"` and the exact saved Content tab, edition format and ID, PDF name, size and SHA-256. The server issues a transient transfer ID. Submit sequential base64 PDF chunks with `action:"append"`, `transfer_id`, zero-based `index` and `data_base64` (24 KiB decoded maximum per call). Complete with `action:"commit"` to validate the byte count, PDF header and SHA-256 and stage the file inside the **paired Brave extension**, not on the Mac Desktop. `action:"abort"` discards incomplete data. The transfer expires after 20 minutes.
+- `kdp_upload_file`: use the staged `file_id` and a **freshly inspected** file-input control, tab, document ID and expected URL to dispatch the file to the existing KDP edition. Inspect/poll Amazon's actual processing state using `kdp_upload_status`. Dispatch is not evidence of acceptance.
+
+The receive path is authenticated through the existing owner-scoped MCP connection and paired Brave. It never fetches arbitrary URLs or gives the Render server private Google/Photopea credentials. It rejects filenames with paths, non-PDF files, invalid hashes, oversize files, changed editions and possible cover replacements. Each incomplete transfer is ephemeral in extension memory; a Brave worker restart safely discards it, so callers must restart rather than blindly replay.
+
+**Current limitation:** The MCP client must supply the PDF bytes in ordered base64 chunks. Google Drive's opaque `file_uri` and Photopea's private export URLs are not themselves accessible to this tool. A future authenticated connector-to-connector binary handoff (or explicitly authorized private streaming endpoint) is needed for efficient, fully automatic large Google Docs/Photopea exports. This is not yet an end-to-end Google Docs -> Photopea -> KDP workflow; do not claim it is.
+
+The update script now installs `remote-policy.js` into the same existing unpacked Brave extension alongside background.js and the other scripts. Updating Render alone will NOT update the Mac extension: use the approved in-place updater and reload, keeping the existing extension ID and pairing. The currently connected ChatGPT plugin may need tool inventory refresh and reauthorization after deploy.
+
+
 ## Version 0.3.2: video-driven safety hardening (source only until deployed)
 
 The 2026-11-22 screen recording revealed absent covers, disabled Previewer controls, a macOS file picker that was not evidence of upload acceptance, and an unsaved-changes dialog on a NEW paperback page. The bridge now returns a conservative `content_state` object when inspecting KDP Content pages, blocks cover-upload mode changes and cover replacement when an existing cover is detected **or cover status cannot be established**, reports saving/unsaved conditions, and classifies upload observations without treating browser transfer as Amazon acceptance. If Amazon's content signals conflict, cover protection fails closed.
