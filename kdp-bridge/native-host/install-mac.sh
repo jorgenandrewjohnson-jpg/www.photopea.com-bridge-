@@ -11,7 +11,10 @@ PYTHON="$(command -v python3 || true)"
 if [ -z "$PYTHON" ]; then echo 'Python 3 is required.' >&2; exit 1; fi
 SOURCE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 TARGET="$HOME/Library/Application Support/KDP Brave Bridge"
-MANIFEST="$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+MANIFEST="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+# Brave on macOS resolves user native messaging hosts through Chrome\x27s
+# NativeMessagingHosts directory (see brave_main_delegate.cc).
+# Keep the earlier Brave-specific registration untouched for compatibility.
 mkdir -p "$TARGET" "$MANIFEST"
 cp "$SOURCE/kdp_native_host.py" "$TARGET/kdp_native_host.py"
 chmod 600 "$TARGET/kdp_native_host.py"
