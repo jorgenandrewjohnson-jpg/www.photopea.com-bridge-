@@ -5,7 +5,7 @@ const tab = {tab_id:z.number().int().nonnegative()};
 const page = {...tab, document_id:z.string().min(1).max(100), expected_path:z.string().max(500)};
 const control = {...page, control_id:z.string().uuid()};
 const text = z.string().trim().min(1).max(1000);
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 export function createMcp(browser) {
   const server = new McpServer({name:'kdp-browser-bridge',version:VERSION});
   function register(name, description, inputSchema, readOnlyHint, handler) {
@@ -27,6 +27,7 @@ export function createMcp(browser) {
   register('scroll','Scroll a verified publishing document.',{...page,y:z.number().int().min(-4000).max(4000)},false,a=>browser.call('scroll',a));
   register('capture','Capture the visible approved preview or Cover Creator tab. Report the visible pages and uninspected ranges.',page,true,a=>browser.call('capture',a));
   register('list_staged_files','List edition-bound files selected locally in Brave.',{},true,()=>browser.call('staged',{}));
+  register('stage_file','Stage an existing PDF from the Mac owner-approved Desktop or Downloads folder via the installed read-only native helper. Check the returned SHA-256 before upload.',{tab_id:z.number().int().nonnegative(),edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text,path:z.string().min(1).max(1024),kind:z.enum(['manuscript','cover'])},false,a=>browser.call('stage_file',a));
   register('upload_staged_file','Send selected local artifact to a matching Content file input. Check Amazon processing separately.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('publish_approved','Only after explicit chat approval for the exact edition, price, rights and warnings, request one final click. The user must confirm in Brave. Verify actual Bookshelf status.',{...control,title:text,edition:text,edition_id:text,price:text,rights:text,warnings:z.array(text).max(40),chat_approved:z.literal(true)},false,a=>browser.call('publish',a));
   return server;
