@@ -77,9 +77,9 @@ def main():
             break
         try:
             a = json.loads(sys.stdin.buffer.read(length))
-            reply(handle(a))
+            reply({'id': a.get('id'), **handle(a)})
         except Exception as exc:
-            reply({'ok': False, 'error': str(exc)[:300]})
+            reply({'id': a.get('id') if isinstance(a, dict) else None, 'ok': False, 'error': str(exc)[:300]})
 
 
 if __name__ == '__main__':
