@@ -1,4 +1,4 @@
-import {route,openable,bridgeOrigin,isPdfPath} from './policy.js';
+import {route,openable,bridgeOrigin,isPdfPath,classifyUpload,contentBlockers} from './policy.js';
 import {getFile,listFiles,stage} from './files.js';
 let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
 const uploads=new Map();
@@ -193,7 +193,15 @@ async function run(op,a) {
       const {page}=await context(a.tab_id);
       if(page.edition!==a.edition || page.edition_id!==a.edition_id || page.stage!=='content') throw Error('Edition mismatch');
       const observed=await inPage(a,'processing');
-      return {operations:[...uploads.values()].filter(o=>o.edition===a.edition&&o.edition_id===a.edition_id),amazon:observed.result};
+      const operations=[...uploads.values()].filter(o=>o.edition===a.edition&&o.edition_id===a.edition_id).map(o=>({
+        ...o,
+        amazon_observation:classifyUpload(observed.result.observed_text,o.name),
+        amazon_accepted_verified:false
+      }));
+      return {operations,amazon:{...observed.result,
+        blockers:contentBlockers(observed.result.observed_text),
+        amazon_processing_verified:false}};
+
     }
     case 'stage_file':return stageNative(a);
     case 'open': {
