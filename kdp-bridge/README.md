@@ -1,5 +1,14 @@
 # Brave KDP publishing bridge
 
+## Version 0.3.4: connection diagnostics and macOS privacy errors
+
+The live bridge now exposes `last_paired_at` and `last_disconnect` in `kdp_bridge_status`, recording only timestamp, WebSocket code and a short sanitized reason, not pairing secrets. The server pings the paired socket periodically to preserve connectivity and identify stale connections; Brave schedules an early reconnect alarm after unexpected closure, retaining the existing periodic fallback. Expired incomplete remote transfer sessions are pruned when a new transfer begins.
+
+When the native helper reports `Operation not permitted` for a Desktop/Downloads PDF, this is an OS-level macOS Files & Folders (TCC) privacy denial. Do not modify macOS TCC databases or bypass the permission. The owner may authorize the relevant Brave/native Python process in System Settings > Privacy & Security > Files & Folders, or use an approved cloud export transfer. Permission denial is **not** evidence that Amazon KDP has rejected an AI upload.
+
+This release improves diagnostics and reconnection but does not itself grant native host permission to protected folders, solve ChatGPT workspace DNS access to the private HTTPS ingress, or implement a complete Google Docs/Photopea binary handoff. Verify actual Amazon processing separately.
+
+
 ## Version 0.3.3: direct ChatGPT-to-Brave PDF receiving (requires deployment)
 
 This release adds two MCP commands:
