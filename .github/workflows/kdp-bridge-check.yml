@@ -1,0 +1,19 @@
+name: Brave KDP Bridge Checks
+on:
+  push:
+    branches: [kdp-browser-bridge]
+  workflow_dispatch:
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install bridge dependencies
+        run: cd kdp-bridge && npm install --no-audit --no-fund
+      - name: Check server and Brave extension JavaScript
+        run: cd kdp-bridge && npm run check
+      - name: Validate Manifest V3 extension JSON
+        run: node -e "const m=require('./kdp-bridge/extension/manifest.json');if(m.manifest_version!==3)process.exit(1);console.log(m.name)"
