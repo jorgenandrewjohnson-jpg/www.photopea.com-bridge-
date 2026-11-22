@@ -8,6 +8,12 @@ Load the `extension` folder with Brave's Load unpacked command. Open its action,
 
 Connect the existing personal plugin to `/mcp` with Streamable HTTP and OAuth. The owner consents using the KDP bridge owner key. Dynamic registration, S256 PKCE, audience checks and rotating refresh tokens are supported. Restarting this single-instance service clears OAuth grants and pending operations. Reauthorize if prompted. GET /health is public. Authenticated kdp_bridge_status reports Brave pairing.
 
+## Updating an existing unpacked Brave extension
+
+When Amazon uses `/en_US/print-setup/hardcover/<edition-id>/content`, use extension **0.2.1 or newer**. It recognizes both `title-setup` and `print-setup` Details, Content and Pricing routes with the existing KDP hostname and edition-ID checks.
+
+Brave does **not** automatically synchronize an unpacked extension with GitHub commits or Render deploys. Update the local `kdp-browser-bridge` worktree from the `kdp-browser-bridge` branch, then open `brave://extensions` and click **Reload** for the existing **Brave KDP Bridge (Private)** extension. Keep its same extension entry and local extension directory; do not remove it or install a second copy, because doing so can discard the stored pairing. Confirm `kdp_bridge_status` returns `paired: true`, then inspect the exact hardcover Content tab. Do not rotate `KDP_OWNER_KEY` as part of this update.
+
 ## Publishing and recovery
 
 Start at Bookshelf. Read the selected work, edition and KDP identifier from the page. Reconcile them with the existing Google Drive publishing ledger. On a repeated request, find the existing edition before using Create. Page controls are tied to the selected tab, document and inspected path. Inspect again after navigation. Tools support an allowlist of English-language publishing pages and controls. A missing control, editor embedded in another origin or unsupported Previewer requires direct user interaction. Never proceed through an Amazon challenge.
