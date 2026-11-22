@@ -37,7 +37,7 @@ export function createMcp(browser) {
     sha256:z.string().regex(/^[a-f0-9]{64}$/i).optional(),
     transfer_id:z.string().uuid().optional(),index:z.number().int().nonnegative().optional(),
     data_base64:z.string().max(32772).optional()
-  },false,a=>browser.call('receive_file',a));
+  },false,a=>a.action==='begin'?browser.prepareTransfer(a):browser.call('receive_file',a));
   register('upload_file','Upload an edition-bound PDF received directly through kdp_receive_file, using a freshly inspected exact KDP file input. Verify Amazon processing separately; dispatch alone is not acceptance.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_staged_file','Send selected local artifact to a matching Content file input. Check Amazon processing separately.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_status','Inspect browser upload transfer records and Amazon processing notices for the exact edition; do not infer acceptance from a dispatched upload.',{...page,edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text},true,a=>browser.call('upload_status',a));
