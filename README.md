@@ -41,7 +41,7 @@ Only one browser workspace can be paired at a time.
 | `photopea_place_image` | Place a PNG or JPG as an embedded Smart Object with a top-left position and relative scale. Tool inputs support about 2 MiB per file. |
 | `photopea_manage_layers` | List, rename, reorder within a group, show, hide, update editable text, move, scale or rotate. Use exact layer paths. |
 | `photopea_run_script` | Run a Photopea scripting DOM command after the paired browser operator approves the displayed script. Use typed tools for ordinary edits. |
-| `photopea_export` | Export PSD, PNG, JPG or a single-page flattened RGB PDF at the document’s physical size. PDF is limited to 18 megapixels. |
+| `photopea_export` | Export PSD, PNG, JPG or a single-page flattened RGB PDF at the document’s physical size. PDF uses a high-quality JPEG embedded without intermediate PNG decoding and supports up to 100 megapixels (subject to file and browser memory limits). |
 | `job_status` | Check completion, get confirmed results, and retrieve a private download URL. |
 
 Mutating tools return a job ID. Poll `job_status` and check the final state.
