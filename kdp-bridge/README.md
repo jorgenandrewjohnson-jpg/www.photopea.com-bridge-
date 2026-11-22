@@ -1,5 +1,18 @@
 # Brave KDP publishing bridge
 
+## Version 0.3.0: owner-approved Mac PDF access
+
+The KDP bridge now exposes `kdp_stage_file` for PDFs directly in the Mac owner's `~/Desktop` or `~/Downloads`. It requires explicit one-time native messaging host installation and does **not** grant filesystem access to Render or ChatGPT. The native helper permits read-only access to ordinary PDF files directly in those two folders, refuses symlinks and other folders, validates PDF headers, limits files to 80 MiB, and returns bounded chunks. Installing the helper is a trust decision: the paired bridge can thereafter stage eligible PDF files from these folders for the authenticated edition. Files are staged inside Brave, not permanently uploaded to Render.
+
+For the Mac already using `~/Developer/kdp-browser-bridge/kdp-bridge/extension`, preserve the existing unpacked extension, extension ID and pairing. Find its **Extension ID** in `brave://extensions` with Developer mode enabled. Download `kdp-bridge/native-host/update-existing-mac.sh` from this branch and run `sh update-existing-mac.sh YOUR_32_CHARACTER_EXTENSION_ID`. The updater fetches the source-controlled extension scripts and native host, checks the version and JavaScript syntax, backs up the previous scripts, installs the host with only this extension ID allowed, and leaves Brave pairing storage untouched. Then click **Reload** on the existing extension in `brave://extensions`. Do not install a duplicate extension.
+
+Call `kdp_list_tabs` and verify the exact saved hardcover Content tab before calling `kdp_stage_file` with e.g. `{tab_id,edition:"hardcover",edition_id:"MDYZRKK4ZHV",kind:"manuscript",path:"/Users/jorgen/Desktop/Corinthians_Joel_6x9_Images_Aligned_REVIEW.pdf"}`. Use the same pattern with `kind:"cover"` and the 500-DPI hardcover PDF after it has been saved locally. List staged files to obtain the returned UUID, inspect the upload targets, invoke `kdp_upload_staged_file`, then inspect Amazon and call `kdp_upload_status` until processing is confirmed. Upload dispatch is **not** proof of Amazon acceptance.
+
+The KDP scanner now exposes buttons, radios, checkboxes, select options, visible text fields, and context-associated file inputs while excluding publication, ordering and destructive account controls. The separate publication confirmation remains mandatory. It also checks the visible Paperback/Hardcover Content heading to protect editions that happen to share a setup ID. Browser commands execute in a queue instead of failing with a busy error.
+
+**Boundaries:** This update does not bypass ChatGPT Library raw-file authorization, circumvent Amazon sign-in/captcha, or provide a hidden route into Mac's entire filesystem. It does not automatically verify the full Cover Creator or every Previewer page; these require live browser checks and explicit captures. The native helper only operates after Mac-side installation.
+
+
 Deploy the existing repository's `kdp-browser-bridge` branch as its own single-instance Render Node web service. Build with `cd kdp-bridge && npm ci --omit=dev --ignore-scripts` and start with `node kdp-bridge/server.mjs`. The root Dockerfile serves the separate Photopea project. Use a new random 48-byte `KDP_OWNER_KEY` in Render Environment. Render supplies the service origin. For local testing set `PORT` and use the default loopback origin. Run `npm ci`, `npm run check`, and `npm test` inside this directory.
 
 ## Connect Brave and ChatGPT
