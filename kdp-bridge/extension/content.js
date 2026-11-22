@@ -38,8 +38,13 @@
     if (p.stage!=='content' || p.edition_id==='new') return null;
     const own=identity(el)+' '+(el.getAttribute('accept')||'');
     const nearby=normal(el.closest('section,fieldset,[class*=upload],.a-box')?.innerText||el.parentElement?.parentElement?.innerText||'').slice(0,600).toLowerCase();
-    if (/cover/i.test(own) || /book cover|cover file|upload your cover/i.test(nearby)) return 'cover';
-    if (/manuscript|interior|book content/i.test(own) || /manuscript|upload your manuscript|interior/i.test(nearby)) return 'manuscript';
+    if (/cover/i.test(own)) return 'cover';
+    if (/manuscript|interior|book content/i.test(own)) return 'manuscript';
+    const nearCover=/book cover|cover file|upload your cover/i.test(nearby);
+    const nearInterior=/manuscript|upload your manuscript|interior/i.test(nearby);
+    if(nearCover!==nearInterior) return nearCover?'cover':'manuscript';
+    // Amazon sometimes places both file slots under one large container.
+    // Only use their documented order if exactly two slots are present.
     const inputs=allElements().filter(x=>x.matches('input[type=file]'));
     if(inputs.length===2) return inputs.indexOf(el)===0?'manuscript':'cover';
     return null;
