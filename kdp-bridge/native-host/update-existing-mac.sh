@@ -12,19 +12,19 @@ RAW="https://raw.githubusercontent.com/jorgenandrewjohnson-jpg/www.photopea.com-
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 mkdir -p "$TMP/extension" "$TMP/native-host" "$DEST"
-for file in background.js content.js files.js manifest.json policy.js popup.js popup.html; do
+for file in background.js content.js files.js manifest.json policy.js remote-policy.js popup.js popup.html; do
   curl -fsSL --retry 3 "$RAW/extension/$file" -o "$TMP/extension/$file"
 done
 for file in kdp_native_host.py install-mac.sh; do
   curl -fsSL --retry 3 "$RAW/native-host/$file" -o "$TMP/native-host/$file"
 done
-grep -q '"version": "0.3.2"' "$TMP/extension/manifest.json" || { echo 'Unexpected extension version' >&2; exit 1; }
+grep -q '"version": "0.3.3"' "$TMP/extension/manifest.json" || { echo 'Unexpected extension version' >&2; exit 1; }
 if command -v node >/dev/null 2>&1; then
   for file in background.js content.js files.js policy.js popup.js; do
     node --check "$TMP/extension/$file"
   done
 fi
-BACKUP="$DEST/backup-before-v0.3.2"
+BACKUP="$DEST/backup-before-v0.3.3"
 mkdir -p "$BACKUP"
 for file in background.js content.js files.js manifest.json policy.js popup.js popup.html; do
   [ -f "$DEST/$file" ] && cp "$DEST/$file" "$BACKUP/$file"
