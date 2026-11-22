@@ -56,7 +56,7 @@ def location(value):
             'System Settings > Privacy & Security > Files & Folders.'
         ) from exc
     if header != b'%PDF-':
-            raise ValueError('Selected file is not a valid PDF header')
+        raise ValueError('Selected file is not a valid PDF header')
     return resolved, st
 
 
