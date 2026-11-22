@@ -15,6 +15,8 @@ if (new URL(origin).origin !== origin || (!local && !origin.startsWith('https://
 const sign = (label,value) => createHmac('sha256',owner).update(label+'\0'+value).digest('base64url');
 const oauth = createOAuth({origin,ownerSecret:owner,signingKey:sign('oauth',origin)});
 let paired;
+let lastDisconnect=null;
+let lastPairedAt=null;
 const requests = new Map();
 const candidates = new Map();
 const sockets = new WebSocketServer({noServer:true,maxPayload:12*1024*1024,perMessageDeflate:false});
@@ -40,6 +42,7 @@ function dispatch() {
 const browser = {
   status:()=>({
     version:VERSION, paired:paired?.readyState===WebSocket.OPEN,
+    last_paired_at:lastPairedAt,last_disconnect:lastDisconnect,
     active_operation: activeId ? {operation_id:activeId, type:requests.get(activeId)?.op} : null,
     queued_operations:queue.length
   }),
@@ -104,8 +107,21 @@ server.on('upgrade',(req,socket,head)=>{
 });
 sockets.on('connection',ws=>{
   let code;
+  let lastPong=Date.now();
+  ws.on('pong',()=>{lastPong=Date.now();});
+  const keepAlive=setInterval(()=>{
+    if(ws.readyState!==WebSocket.OPEN) return;
+    if(Date.now()-lastPong>85000) {
+      ws.terminate();return;
+    }
+    try {ws.ping();} catch {ws.terminate();}
+  },30000);
+  keepAlive.unref?.();
   let deadline=setTimeout(()=>ws.close(1008,'Pairing expired'),10000);
-  ws.on('error',()=>ws.terminate());
+  ws.on('error',err=>{
+    console.warn('KDP websocket transport error',err?.code||'unknown');
+    ws.terminate();
+  });
   ws.on('message',raw=>{
     try {
       if (ws!==paired && raw.length>1024) return ws.close(1008);
@@ -118,16 +134,20 @@ sockets.on('connection',ws=>{
           return ws.send(JSON.stringify({type:'challenge',code}));
         }
         if (m.type!=='pair' || (!/^[\w-]{43}\.\d{13}$/.test(m.device||'') || Number(m.device.split('.')[1])<=Date.now()) || !matches(m.proof,sign('browser',m.device)) || paired) return ws.close(1008,'Pairing rejected');
-        clearTimeout(deadline); paired=ws;
+        clearTimeout(deadline); paired=ws;lastPairedAt=new Date().toISOString();
         return ws.send(JSON.stringify({type:'paired'}));
       }
       if (m.type==='heartbeat') return ws.send(JSON.stringify({type:'alive'}));
       if (m.type==='result' && requests.get(m.id)?.ws===ws) finish(m.id,m.ok?null:Error(String(m.error||'Brave operation failed').slice(0,300)),m.value);
     } catch { ws.close(1008,'Invalid message'); }
   });
-  ws.on('close',()=>{
-    clearTimeout(deadline); candidates.delete(code);
-    if (ws===paired) paired=null;
+  ws.on('close',(closeCode,reason)=>{
+    clearTimeout(deadline);clearInterval(keepAlive);candidates.delete(code);
+    if(ws===paired) {
+      lastDisconnect={time:new Date().toISOString(),code:closeCode,reason:String(reason||'').slice(0,80)};
+      console.warn('KDP paired browser disconnected',lastDisconnect);
+      paired=null;
+    }
     for(const [id,job] of requests) if(job.ws===ws) finish(id,Error('Brave disconnected. Inspect the edition before retrying.'));
   });
 });
