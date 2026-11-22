@@ -89,11 +89,15 @@ async function capture(a) {
   chrome.tabs.onActivated.addListener(activated);chrome.tabs.onUpdated.addListener(updated);
   try {
     await inPage(a,'check');
+    const metadata=await inPage(a,'preview_metadata').then(x=>x.result).catch(()=>({
+      inspected_scope:'visible browser viewport only',complete_book_inspected:false,
+      visible_page_labels:[],metadata_unavailable:true
+    }));
     const data=await chrome.tabs.captureVisibleTab(t.windowId,{format:'png'});
     const [active]=await chrome.tabs.query({windowId:t.windowId,active:true});
     await inPage(a,'check');
     if(changed || active?.id!==t.id) throw Error('Tab changed during capture');
-    return {page:{...page,tab_id:t.id,document_id:a.document_id},data:data.split(',')[1]};
+    return {page:{...page,tab_id:t.id,document_id:a.document_id,preview_metadata:metadata},data:data.split(',')[1]};
   } finally {chrome.tabs.onActivated.removeListener(activated);chrome.tabs.onUpdated.removeListener(updated);}
 }
 // Native messaging requires one-time owner installation. The host only reads
