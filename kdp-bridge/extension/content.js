@@ -147,7 +147,7 @@
     if (op==='preview_metadata') {
       if (p.stage!=='previewer' && p.stage!=='cover_creator') throw Error('Preview metadata only available in preview or cover creator');
       const txt=normal(document.body?.innerText || '').slice(0,6000);
-      const labels=[...txt.matchAll(/(?:page\\s+\\d+\\s+(?:of|\\/)\\s*\\d+|pages?\\s+\\d+\\s*[-–]\\s*\\d+)/gi)].map(m=>m[0]).slice(0,12);
+      const labels=[...txt.matchAll(/page\s+\d+\s+(?:of|\/)\s*\d+|pages?\s+\d+\s*[-–]\s*\d+/gi)].map(m=>m[0]).slice(0,12);
       const errors=alerts().map(safeText);
       return {stage:p.stage,visible_page_labels:[...new Set(labels)],alerts:errors,
         inspected_scope:'visible browser viewport only',complete_book_inspected:false};
