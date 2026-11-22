@@ -85,6 +85,32 @@
         throw Error('Edition format is not confirmed by the visible Content heading');
     }
   }
+  // Read-only signals visible on the KDP Content page. Unknown cover state
+  // is deliberately treated as protected until the operator inspects it.
+  function contentState(p) {
+    const body=normal(document.body?.innerText || '');
+    const lower=body.toLowerCase();
+    const coverMissing=/no cover uploaded|launch cover creator to create your required cover/i.test(body);
+    const coverPresent=/cover (?:uploaded|approved|processed)|uploaded cover|replace (?:your )?cover/i.test(body) && !coverMissing;
+    const saving=/\\bsaving\\.{0,3}(?:\\s|$)/i.test(body) || !!document.querySelector('[aria-busy="true"],.saving-spinner');
+    const unsaved=/unsaved changes|continue without saving|leave (?:this )?page without saving/i.test(body);
+    const uploadError=/upload (?:failed|error)|file (?:rejected|invalid)|could not (?:upload|process)/i.test(body);
+    const preview=[...document.querySelectorAll('button,a,[role="button"],input[type="button"]')].find(el=>/launch (?:print )?previewer|preview your book/i.test(label(el)));
+    return {cover_status:coverMissing?'missing':coverPresent?'present':'unknown',
+      saving,unsaved_changes:unsaved,upload_error:uploadError,
+      preview_enabled:preview?!(preview.matches(':disabled,[aria-disabled="true"]')):null,
+      preview_approval_required:/please preview and approve your book/i.test(body),
+      observed_at:new Date().toISOString(),stage:p.stage};
+  }
+  function protectMutation(el,p,op) {
+    if (p.stage!=='content') return;
+    const state=contentState(p);
+    if (state.saving || state.unsaved_changes) throw Error('KDP is saving or has unsaved changes; inspect and resolve before changing content');
+    const descriptor=identity(el)+' '+normal(el.closest('label,fieldset,section')?.innerText||'').slice(0,180).toLowerCase();
+    const coverMode=op==='click' && (/(cover.creator|upload a cover you already have|print.ready pdf)/i.test(descriptor));
+    if (coverMode && state.cover_status!=='missing') throw Error('Existing or unknown cover state: cover-mode changes are blocked to protect uploaded artwork');
+    if (op==='upload_begin' && state.cover_status!=='missing') throw Error('Existing or unknown cover state: cover replacement requires separate explicit authorization');
+  }
   function fingerprint() {
     const form=[...document.querySelectorAll('input,select,textarea')].filter(el=>el.type!=='hidden' && el.type!=='password' && el.type!=='file').map(el=>[el.name,el.value,el.checked]);
     return JSON.stringify([location.href,document.body.innerText,form]);
@@ -108,7 +134,7 @@
         const row=el.closest('tr,fieldset,section,[data-title-id],.a-box');
         list.push({control_id:id,kind,label:safeText(name),context:safeText(row?.innerText).slice(0,280),...(kind==='fill'?{value:safeText(el.value ?? el.innerText).slice(0,1200),options:el.tagName==='SELECT'?[...el.options].map(o=>({value:o.value,label:normal(o.textContent),selected:o.selected})).slice(0,100):undefined}:{}) ,...(kind==='click' && el.matches('input[type=radio],input[type=checkbox],[role=radio],[role=checkbox]')?{checked:el.checked??el.getAttribute('aria-checked')==='true',value:el.value??null}:{})});
       }
-      return {title:safeText(document.title),page:p,controls:list,alerts:alerts().map(safeText),text:safeText(document.body.innerText).slice(0,28000)};
+      return {title:safeText(document.title),page:p,controls:list,alerts:alerts().map(safeText),content_state:contentState(p),text:safeText(document.body.innerText).slice(0,28000)};
     }
     if (op==='processing') {
       const progress=[...document.querySelectorAll('progress,[role=progressbar],[aria-busy=true]')]
@@ -116,13 +142,14 @@
           value:el.value??el.getAttribute('aria-valuenow')??null,
           max:el.max??el.getAttribute('aria-valuemax')??null})).slice(0,20);
       return {page:p,alerts:alerts().map(safeText),progress,
-        observed_text:safeText(document.body?.innerText||'').slice(0,9000),
+        observed_text:safeText(document.body?.innerText||'').slice(0,9000),content_state:contentState(p),
         amazon_processing_verified:false};
     }
     if (op==='check') return true;
     if (op==='scroll') {window.scrollBy(0,a.y);return {y:scrollY};}
     if (op==='click') {
       const el=getControl(a,p,'click');
+      protectMutation(el,p,'click');
       el.click();
       return {dispatched:true,checked:el.checked??null,confirmation:'Inspect the destination and Amazon status.'};
     }
@@ -141,6 +168,7 @@
     if (op==='upload_begin') {
       if (p.edition_id!==a.edition_id || p.edition!==a.edition || p.edition_id==='new' || p.stage!=='content') throw Error('Staged edition does not match this Content page');
       const input=getControl(a,p,a.kind);
+      if (a.kind==='cover') protectMutation(input,p,'upload_begin');
       transfer={...a,input,parts:[],bytes:0};
       return true;
     }
