@@ -28,3 +28,27 @@ export function bridgeOrigin(value) {
 
 // Filename precheck only; the native host independently enforces path allowlists.
 export const isPdfPath = value => typeof value === 'string' && /\.pdf$/i.test(value);
+
+/** Conservative status classification. Amazon acceptance requires positive evidence,
+ * never a browser-side dispatched event, progress bar, or selected file alone. */
+export function classifyUpload(observedText, fileName='') {
+  const text=String(observedText||'');
+  if (/upload (?:failed|error)|error uploading|unable to (?:upload|process)|file (?:rejected|invalid)/i.test(text))
+    return 'rejected_or_error';
+  if (/processing|uploading|please wait|checking file|validating (?:your )?file/i.test(text))
+    return 'processing';
+  // A generic 'uploaded' elsewhere on the page is not filename-specific proof.
+  const escaped=String(fileName||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  if (escaped && new RegExp(escaped+'[\\s\\S]{0,180}(?:successfully uploaded|upload complete|processed successfully|approved)','i').test(text))
+    return 'accepted_observed';
+  return 'unverified';
+}
+export function contentBlockers(observedText) {
+  const t=String(observedText||'');
+  return {
+    cover_missing:/no cover uploaded|launch cover creator to create your required cover/i.test(t),
+    preview_approval_required:/please preview and approve your book/i.test(t),
+    saving:/\\bsaving\\.{0,3}(?:\\s|$)/i.test(t),
+    unsaved_changes:/unsaved changes|continue without saving/i.test(t),
+  };
+}
