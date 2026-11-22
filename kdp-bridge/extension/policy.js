@@ -48,7 +48,7 @@ export function contentBlockers(observedText) {
   return {
     cover_missing:/no cover uploaded|launch cover creator to create your required cover/i.test(t),
     preview_approval_required:/please preview and approve your book/i.test(t),
-    saving:/\\bsaving\\.{0,3}(?:\\s|$)/i.test(t),
+    saving:/\bsaving\.{0,3}(?:\s|$)/i.test(t),
     unsaved_changes:/unsaved changes|continue without saving/i.test(t),
   };
 }
