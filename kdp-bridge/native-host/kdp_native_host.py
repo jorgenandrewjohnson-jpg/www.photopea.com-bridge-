@@ -31,14 +31,31 @@ def location(value):
     path = Path(value)
     if path.suffix.lower() != '.pdf' or path.is_symlink():
         raise ValueError('Only non-symlink PDF files are allowed')
-    resolved = path.resolve(strict=True)
+    try:
+        resolved = path.resolve(strict=True)
+    except PermissionError as exc:
+        raise PermissionError(
+            'macOS blocked Desktop/Downloads access for the native Python helper. '
+            'This is a local Files & Folders privacy restriction, not a KDP error. '
+            'Allow access for Brave (and the Python executable if shown) in '
+            'System Settings > Privacy & Security > Files & Folders, or use '
+            'the private cloud PDF receiving workflow instead.'
+        ) from exc
     if resolved.parent not in ROOTS or not resolved.is_file():
         raise ValueError('The PDF must be directly on Desktop or in Downloads')
     st = resolved.stat()
     if st.st_size <= 0 or st.st_size > MAX_FILE:
         raise ValueError('PDF is empty or exceeds the 250-MiB limit')
-    with resolved.open('rb') as stream:
-        if stream.read(5) != b'%PDF-':
+    try:
+        with resolved.open('rb') as stream:
+            header = stream.read(5)
+    except PermissionError as exc:
+        raise PermissionError(
+            'macOS privacy settings denied the KDP helper permission to read this PDF. '
+            'Allow the native host process access to Desktop/Downloads in '
+            'System Settings > Privacy & Security > Files & Folders.'
+        ) from exc
+    if header != b'%PDF-':
             raise ValueError('Selected file is not a valid PDF header')
     return resolved, st
 
@@ -46,7 +63,7 @@ def location(value):
 def handle(a):
     action = a.get('action')
     if action == 'health':
-        return {'ok': True, 'version': '0.3.3'}
+        return {'ok': True, 'version': '0.3.4'}
     path, st = location(a.get('path'))
     if action == 'stat':
         return {'ok': True, 'name': path.name, 'size': st.st_size,
