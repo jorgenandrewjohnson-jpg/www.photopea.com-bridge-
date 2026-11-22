@@ -1,0 +1,29 @@
+name: KDP Bridge Tests
+on:
+  push:
+    branches: [kdp-browser-bridge]
+    paths:
+      - 'kdp-bridge/**'
+      - '.github/workflows/kdp-bridge-tests.yml'
+  workflow_dispatch:
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kdp-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: kdp-bridge/package-lock.json
+      - name: Install from lockfile
+        run: npm ci --ignore-scripts
+      - name: Syntax checks
+        run: npm run check
+      - name: Unit and integration tests
+        run: npm test
+      - name: Native helper Python syntax
+        run: python3 -m py_compile native-host/kdp_native_host.py
