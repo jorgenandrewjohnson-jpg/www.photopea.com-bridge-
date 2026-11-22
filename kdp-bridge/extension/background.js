@@ -37,10 +37,14 @@ async function connect() {
       if (socket===ws && ws.readyState===1) ws.send(JSON.stringify({type:'result',id:m.id,...reply}));
     } catch {ws.close();}
   };
+  ws.onerror=()=>{lastError='WebSocket transport error; reconnect pending';};
   ws.onclose=event=>{
     if (socket!==ws) return;
     stop();
-    lastError=event.reason || 'Disconnected. Reconnect will be attempted.';
+    lastError='WebSocket closed ('+event.code+'): '+(event.reason || 'no reason');
+    // A one-shot alarm survives MV3 worker suspension. The existing periodic
+    // alarm remains the fallback if Brave is offline.
+    void chrome.alarms.create('kdp-reconnect-fast',{when:Date.now()+6000}).catch(()=>{});
   };
 }
 function stop() {
@@ -49,7 +53,7 @@ function stop() {
   if (pendingPublish) pendingPublish.decide(false);
   old?.close();
 }
-chrome.alarms.onAlarm.addListener(a=>{if(a.name==='kdp-reconnect') void connect().catch(()=>{});});
+chrome.alarms.onAlarm.addListener(a=>{if(['kdp-reconnect','kdp-reconnect-fast'].includes(a.name)) void connect().catch(()=>{});});
 async function wake() {
   if (!await chrome.alarms.get('kdp-reconnect')) await chrome.alarms.create('kdp-reconnect',{periodInMinutes:1});
   await connect();
@@ -167,6 +171,7 @@ async function receiveRemote(a) {
       throw Error('KDP has unsaved changes or is saving');
     if (a.kind==='cover' && inspected.result.content_state?.cover_status!=='missing')
       throw Error('Cover is already present or cannot be verified; replacement is blocked');
+    for(const [id,t] of remoteTransfers) if(Date.now()>t.expires) remoteTransfers.delete(id);
     if(remoteTransfers.size) throw Error('Finish or abort the existing PDF transfer first');
     const transfer_id=crypto.randomUUID();
     remoteTransfers.set(transfer_id,{
