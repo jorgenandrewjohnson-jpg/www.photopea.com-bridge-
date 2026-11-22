@@ -29,6 +29,7 @@ export function createMcp(browser) {
   register('list_staged_files','List edition-bound files selected locally in Brave.',{},true,()=>browser.call('staged',{}));
   register('stage_file','Stage an existing PDF from the Mac owner-approved Desktop or Downloads folder via the installed read-only native helper. Check the returned SHA-256 before upload.',{tab_id:z.number().int().nonnegative(),edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text,path:z.string().min(1).max(1024),kind:z.enum(['manuscript','cover'])},false,a=>browser.call('stage_file',a));
   register('upload_staged_file','Send selected local artifact to a matching Content file input. Check Amazon processing separately.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
+  register('upload_status','Inspect browser upload transfer records and Amazon processing notices for the exact edition; do not infer acceptance from a dispatched upload.',{...page,edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text},true,a=>browser.call('upload_status',a));
   register('publish_approved','Only after explicit chat approval for the exact edition, price, rights and warnings, request one final click. The user must confirm in Brave. Verify actual Bookshelf status.',{...control,title:text,edition:text,edition_id:text,price:text,rights:text,warnings:z.array(text).max(40),chat_approved:z.literal(true)},false,a=>browser.call('publish',a));
   return server;
 }
