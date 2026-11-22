@@ -11,7 +11,7 @@ export async function composePdf(jpg, dpi) {
     throw new Error('Photopea did not return JPEG image data for PDF export.');
   }
   const doc = await PDFDocument.create();
-  const image = await doc.embedJpg(jpg);
+  const image = await doc.embedJpg(Uint8Array.from(jpg));
   if (!image.width || !image.height || image.width * image.height > 100_000_000) {
     throw new Error('PDF image dimensions exceed the 100-megapixel safety limit.');
   }
