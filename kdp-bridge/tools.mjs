@@ -5,7 +5,7 @@ const tab = {tab_id:z.number().int().nonnegative()};
 const page = {...tab, document_id:z.string().min(1).max(100), expected_path:z.string().max(500)};
 const control = {...page, control_id:z.string().uuid()};
 const text = z.string().trim().min(1).max(1000);
-export const VERSION = '0.3.1';
+export const VERSION = '0.3.2';
 export function createMcp(browser) {
   const server = new McpServer({name:'kdp-browser-bridge',version:VERSION});
   function register(name, description, inputSchema, readOnlyHint, handler) {
