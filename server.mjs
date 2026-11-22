@@ -49,7 +49,7 @@ const operationTools = [
     ])],
   ['photopea_run_script', 'Request execution of a Photopea scripting DOM command in the active paired browser. The workspace operator must approve the displayed script. Use typed tools for routine edits. Return a small JSON-serializable value to report results. Poll job_status.',
     operationSchema({ script: z.string().trim().min(1).max(20000) })],
-  ['photopea_export', 'Export the active document as editable PSD, flattened PNG/JPG, or a single-page flattened RGB PDF. PDF uses the active document’s physical size and supports up to 18 megapixels. Download through the paired workspace or authenticated download URL. Poll job_status.',
+  ['photopea_export', 'Export the active document as editable PSD, flattened PNG/JPG, or a single-page flattened RGB PDF. PDF uses the active document’s physical size, including 500-DPI wraparound covers; compression uses a high-quality JPEG with a 100-megapixel safety limit. Download through the paired workspace or authenticated download URL. Poll job_status.',
     z.discriminatedUnion('format', [
       operationSchema({ format: z.literal('psd'), name: fileName }),
       operationSchema({ format: z.literal('png'), name: fileName }),
