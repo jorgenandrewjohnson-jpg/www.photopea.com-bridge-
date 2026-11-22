@@ -4,6 +4,7 @@ import {WebSocketServer,WebSocket} from 'ws';
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {createOAuth,readBody,send,matches} from './oauth.mjs';
 import {VERSION,createMcp} from './tools.mjs';
+import {createTransferIngress} from './http-transfer.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const origin = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_ORIGIN || 'http://127.0.0.1:'+port;
@@ -55,6 +56,8 @@ const browser = {
     });
   }
 };
+const ingress=createTransferIngress({origin,dispatch:(op,args)=>browser.call(op,args)});
+browser.prepareTransfer=a=>ingress.prepare(a);
 function finish(id,err,value) {
   const job=requests.get(id);
   if (!job) return;
@@ -71,6 +74,7 @@ const server = http.createServer(async(req,res)=>{
     const url = new URL(req.url,origin);
     if (url.pathname==='/health') return send(res,200,{status:'ok',version:VERSION});
     if (url.pathname.startsWith('/.well-known/') || url.pathname.startsWith('/oauth/')) return await oauth.handle(req,res,url);
+    if (url.pathname.startsWith('/file-transfer/')) return await ingress.handle(req,res,url);
     if (req.headers.origin && req.headers.origin!==origin) return send(res,403,{error:'origin_denied'});
     if (url.pathname==='/device/approve' && req.method==='POST') {
       if (!matches(req.headers.authorization,'Bearer '+owner)) return send(res,401,{error:'unauthorized'});
