@@ -72,6 +72,13 @@
   function check(p) {
     if (location.origin !== new URL(p.path).origin || (p.stage!=='cover_creator' && p.stage!=='previewer' && location.origin+location.pathname!==p.path)) throw Error('Page changed. Inspect again.');
     if (document.querySelector('input[type=password],input[autocomplete=one-time-code],input[name=captchaGuess],#captchacharacters,iframe[src*="captcha" i]') || /verify (?:you are|that you are) (?:a )?human|enter the characters you see|authentication required/i.test(document.body?.innerText.slice(0,2000))) throw Error('Amazon authentication or verification requires user interaction.');
+    // The same KDP identifier may appear in multiple formats. Never treat the
+    // URL's identifier alone as proof of the intended edition.
+    if (p.stage==='content' && ['hardcover','paperback'].includes(p.edition)) {
+      const heading=normal(document.body?.innerText||'').slice(0,9000);
+      if (!new RegExp('\\b'+p.edition+'\\s+content\\b','i').test(heading))
+        throw Error('Edition format is not confirmed by the visible Content heading');
+    }
   }
   function fingerprint() {
     const form=[...document.querySelectorAll('input,select,textarea')].filter(el=>el.type!=='hidden' && el.type!=='password' && el.type!=='file').map(el=>[el.name,el.value,el.checked]);
