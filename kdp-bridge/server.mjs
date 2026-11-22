@@ -17,25 +17,54 @@ let paired;
 const requests = new Map();
 const candidates = new Map();
 const sockets = new WebSocketServer({noServer:true,maxPayload:12*1024*1024,perMessageDeflate:false});
+// Serialize independent MCP requests instead of rejecting them when Brave is busy.
+const queue = [];
+let activeId = null;
+function dispatch() {
+  if (activeId || !queue.length) return;
+  const id = queue.shift();
+  const job = requests.get(id);
+  if (!job) return dispatch();
+  if (job.ws !== paired || paired?.readyState !== WebSocket.OPEN) {
+    finish(id, Error('Brave disconnected before the operation began.'));
+    return;
+  }
+  activeId = id;
+  job.state = 'running';
+  job.timer = setTimeout(() => finish(id, Error('Operation outcome unknown. Reinspect KDP before retrying.')), job.op === 'publish' ? 125000 : 65000);
+  job.ws.send(JSON.stringify({type:'command',id,op:job.op,args:job.args}), err => {
+    if (err) finish(id,err);
+  });
+}
 const browser = {
-  status:()=>({version:VERSION,paired:paired?.readyState===WebSocket.OPEN}),
+  status:()=>({
+    version:VERSION, paired:paired?.readyState===WebSocket.OPEN,
+    active_operation: activeId ? {operation_id:activeId, type:requests.get(activeId)?.op} : null,
+    queued_operations:queue.length
+  }),
   call(op,args) {
-    const ws = paired;
+    const ws=paired;
     if (ws?.readyState !== WebSocket.OPEN) throw Error('Brave is not paired');
-    if (requests.size) throw Error('A browser operation is pending');
-    const id = randomUUID();
+    if (requests.size >= 12) throw Error('Browser operation queue is full');
+    if (op === 'publish' && requests.size) throw Error('Finish pending operations and reinspect the pricing page before publishing');
+    const id=randomUUID();
     return new Promise((resolve,reject)=>{
-      const timer = setTimeout(()=>finish(id,Error('Outcome unknown. Inspect the edition before retrying.')),op==='publish'?125000:65000);
-      requests.set(id,{resolve,reject,timer,ws});
-      ws.send(JSON.stringify({type:'command',id,op,args}),err=>{if(err) finish(id,err);});
+      requests.set(id,{resolve,reject,ws,op,args,state:'queued',timer:null});
+      queue.push(id);
+      dispatch();
     });
   }
 };
 function finish(id,err,value) {
-  const item = requests.get(id);
-  if (!item) return;
-  requests.delete(id); clearTimeout(item.timer);
-  if (err) item.reject(err); else item.resolve(value);
+  const job=requests.get(id);
+  if (!job) return;
+  requests.delete(id);
+  if (job.timer) clearTimeout(job.timer);
+  const index=queue.indexOf(id);
+  if(index>=0) queue.splice(index,1);
+  if(activeId===id) activeId=null;
+  if(err) job.reject(err); else job.resolve(value);
+  dispatch();
 }
 const server = http.createServer(async(req,res)=>{
   try {
