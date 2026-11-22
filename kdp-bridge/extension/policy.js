@@ -7,7 +7,7 @@ export function route(value) {
   const path = u.origin + u.pathname;
   const base = u.pathname.replace(/^\/[a-z]{2}_[A-Z]{2}(?=\/)/, '');
   if (/^\/(bookshelf|create)\/?$/.test(base)) return {stage: base.split('/')[1], path};
-  const match = base.match(/^\/title-setup\/(paperback|hardcover|kindle-ebook|kindle|ebook)\/([A-Za-z0-9_-]+)\/(details|content|pricing|rights-and-pricing)\/?$/);
+  const match = base.match(/^\/(?:title-setup|print-setup)\/(paperback|hardcover|kindle-ebook|kindle|ebook)\/([A-Za-z0-9_-]+)\/(details|content|pricing|rights-and-pricing)\/?$/);
   if (match) return {edition: match[1], edition_id: match[2], stage: match[3], path};
   if (/^\/(?:series-setup|series-manager)(?:\/[\w-]+)*\/?$/.test(base)) return {stage: 'series', path};
   if (/^\/(?:[\w-]+\/)*(?:print-preview|print-previewer|previewer|online-previewer)(?:\/[\w-]+)*\/?$/i.test(base)) return {stage:'previewer', path:u.origin + '/[previewer]'};
