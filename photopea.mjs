@@ -216,8 +216,11 @@ var layers=list(doc,0); return { document:doc.name, layers:layers, truncated:rem
     case 'photopea_run_script':
       return single(a.script, { approval: a.script });
     case 'photopea_export': {
-      const wireFormat = a.format === 'pdf' ? 'png' : a.format;
-      const options = a.format === 'jpg' ? ':' + a.quality : '';
+      const wireFormat = a.format === 'pdf' ? 'jpg' : a.format;
+      // At 500 DPI, full-wrap hardcovers exceed the former 18MP PNG/PDF
+      // conversion limit. Photopea's highest-quality JPEG compresses the
+      // payload before transport; the server embeds it without re-encoding.
+      const options = a.format === 'pdf' ? ':1' : a.format === 'jpg' ? ':' + a.quality : '';
       return { steps: [{ body: `${active}doc.saveToOE(${literal(wireFormat + options)}); ${docInfo}`, export: true }],
         format: a.format, wireFormat, name: a.name };
     }
