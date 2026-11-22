@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Brave KDP Bridge</title>
+<style>body{font:13px system-ui;color:#202b37;width:330px;padding:12px}h2{margin:0 0 10px}label{display:block;margin:10px 0 3px;font-weight:600}input,select,button{box-sizing:border-box;width:100%;padding:7px;font:inherit}button{margin-top:8px;cursor:pointer}small{display:block;color:#555;line-height:1.5}#status,#file-status{white-space:pre-wrap;background:#f1f5f9;padding:8px;margin:8px 0;border-radius:5px}hr{border:0;border-top:1px solid #ccc;margin:14px 0}</style>
+<h2>Brave KDP Bridge</h2><small>Keep using Brave. Sign in to Amazon KDP directly in Brave. Never paste an Amazon password into ChatGPT.</small>
+<label>Render KDP bridge URL</label><input id="url" placeholder="https://kdp-browser-bridge.onrender.com">
+<label>BRIDGE_TOKEN from Render Environment</label><input id="token" type="password" autocomplete="off">
+<button id="pair">Pair Brave browser</button><button id="disconnect">Disconnect</button><div id="status">Checking…</div>
+<hr><strong>Stage manuscripts and covers</strong><small>Select files from your computer. Files remain in Brave memory until you explicitly upload them to KDP.</small><input id="files" type="file" multiple><div id="file-status"></div>
+<hr><strong>Authorize one publication</strong><small>Only after reviewing the title, edition, final price and proof. Expires after 5 minutes.</small>
+<label>Exact title</label><input id="title">
+<label>Edition</label><select id="edition"><option value="paperback">Paperback</option><option value="hardcover">Hardcover</option><option value="kindle_ebook">Kindle eBook</option></select>
+<label style="font-weight:400"><input type="checkbox" id="confirm" style="width:auto"> I authorize one Publish click for this edition.</label><button id="arm">Authorize publication</button>
+<script src="popup.js"></script></html>
