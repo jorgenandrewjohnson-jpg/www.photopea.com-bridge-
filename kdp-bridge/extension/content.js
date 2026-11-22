@@ -105,6 +105,15 @@
       }
       return {title:safeText(document.title),page:p,controls:list,alerts:alerts().map(safeText),text:safeText(document.body.innerText).slice(0,28000)};
     }
+    if (op==='processing') {
+      const progress=[...document.querySelectorAll('progress,[role=progressbar],[aria-busy=true]')]
+        .filter(visible).map(el=>({label:normal(el.getAttribute('aria-label')||el.innerText),
+          value:el.value??el.getAttribute('aria-valuenow')??null,
+          max:el.max??el.getAttribute('aria-valuemax')??null})).slice(0,20);
+      return {page:p,alerts:alerts().map(safeText),progress,
+        observed_text:safeText(document.body?.innerText||'').slice(0,9000),
+        amazon_processing_verified:false};
+    }
     if (op==='check') return true;
     if (op==='scroll') {window.scrollBy(0,a.y);return {y:scrollY};}
     if (op==='click') {
