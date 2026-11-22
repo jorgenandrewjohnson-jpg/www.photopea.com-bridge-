@@ -107,7 +107,7 @@
     const state=contentState(p);
     if (state.saving || state.unsaved_changes) throw Error('KDP is saving or has unsaved changes; inspect and resolve before changing content');
     const descriptor=identity(el)+' '+normal(el.closest('label,fieldset,section')?.innerText||'').slice(0,180).toLowerCase();
-    const coverMode=op==='click' && (/(cover.creator|upload a cover you already have|print.ready pdf)/i.test(descriptor));
+    const coverMode=op==='click' && el.matches('input[type=radio],[role=radio]') && (/(cover.creator|upload a cover you already have|print.ready pdf)/i.test(descriptor));
     if (coverMode && state.cover_status!=='missing') throw Error('Existing or unknown cover state: cover-mode changes are blocked to protect uploaded artwork');
     if (op==='upload_begin' && state.cover_status!=='missing') throw Error('Existing or unknown cover state: cover replacement requires separate explicit authorization');
   }
