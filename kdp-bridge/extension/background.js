@@ -1,5 +1,5 @@
 import {route,openable,bridgeOrigin} from './policy.js';
-import {getFile,listFiles} from './files.js';
+import {getFile,listFiles,stage} from './files.js';
 let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
 const popup=chrome.runtime.getURL('popup.html');
 const config=async()=> (await chrome.storage.local.get('pairing')).pairing;
@@ -95,6 +95,57 @@ async function capture(a) {
     return {page:{...page,tab_id:t.id,document_id:a.document_id},data:data.split(',')[1]};
   } finally {chrome.tabs.onActivated.removeListener(activated);chrome.tabs.onUpdated.removeListener(updated);}
 }
+// Native messaging requires one-time owner installation. The host only reads
+// PDFs directly inside Desktop/Downloads; no arbitrary filesystem access.
+async function stageNative(a) {
+  const {page} = await context(a.tab_id);
+  if (page.stage!=='content' || page.edition!==a.edition ||
+      page.edition_id!==a.edition_id || page.edition_id==='new')
+    throw Error('Select the exact saved edition Content tab before staging');
+  if (!['manuscript','cover'].includes(a.kind) || !/\\.pdf$/i.test(a.path))
+    throw Error('Only PDFs for manuscript or cover are accepted');
+  let port;
+  const waiters = new Map();
+  const ask = (action,more={})=>new Promise((resolve,reject)=>{
+    const id=crypto.randomUUID();
+    const timer=setTimeout(()=>{waiters.delete(id);reject(Error('Mac file helper timed out'));},15000);
+    waiters.set(id,{resolve,reject,timer});
+    port.postMessage({id,action,path:a.path,...more});
+  });
+  try {
+    port=chrome.runtime.connectNative('com.kdp.brave_bridge');
+    port.onMessage.addListener(m=>{
+      const w=waiters.get(m.id);
+      if (!w) return;
+      waiters.delete(m.id);clearTimeout(w.timer);
+      if (!m.ok) w.reject(Error(m.error||'Mac file helper rejected the PDF'));
+      else w.resolve(m);
+    });
+    port.onDisconnect.addListener(()=>{
+      const e=Error(chrome.runtime.lastError?.message||'Mac file helper disconnected');
+      for(const w of waiters.values()){clearTimeout(w.timer);w.reject(e);}
+      waiters.clear();
+    });
+    const info=await ask('stat');
+    if (!info.size || info.size>80*1024*1024 || !info.name?.toLowerCase().endsWith('.pdf'))
+      throw Error('Invalid local PDF');
+    const chunks=[];
+    for(let offset=0;offset<info.size;offset+=128*1024) {
+      const count=Math.min(128*1024,info.size-offset);
+      const part=await ask('read',{offset,count,size:info.size,mtime_ns:info.mtime_ns});
+      const raw=atob(part.data);
+      const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));
+      if (bytes.length!==count || part.offset!==offset) throw Error('Incomplete Mac file transfer');
+      chunks.push(bytes);
+    }
+    const file=new File(chunks,info.name,{type:'application/pdf'});
+    const file_id=await stage(file,page,a.kind);
+    const staged=(await listFiles()).find(x=>x.id===file_id);
+    return {...staged,staged:true};
+  } finally {
+    port?.disconnect();
+  }
+}
 async function upload(a) {
   const f=await getFile(a.file_id);
   if (!f) throw Error('Selected artifact is missing');
@@ -130,6 +181,7 @@ async function run(op,a) {
   switch(op) {
     case 'tabs':return (await chrome.tabs.query({url:['https://kdp.amazon.com/*','https://cc.amazon.com/*']})).flatMap(t=>{const p=route(t.url);return p?[{tab_id:t.id,active:t.active,...p}]:[];});
     case 'staged':return listFiles();
+    case 'stage_file':return stageNative(a);
     case 'open': {
       if(!openable(a.url)) throw Error('Unsupported publishing destination');
       const t=await chrome.tabs.create({url:a.url});return {tab_id:t.id,requested:a.url};
