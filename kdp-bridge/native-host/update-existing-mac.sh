@@ -20,13 +20,13 @@ for file in kdp_native_host.py install-mac.sh; do
 done
 grep -q '"version": "0.3.3"' "$TMP/extension/manifest.json" || { echo 'Unexpected extension version' >&2; exit 1; }
 if command -v node >/dev/null 2>&1; then
-  for file in background.js content.js files.js policy.js popup.js; do
+  for file in background.js content.js files.js policy.js remote-policy.js popup.js; do
     node --check "$TMP/extension/$file"
   done
 fi
 BACKUP="$DEST/backup-before-v0.3.3"
 mkdir -p "$BACKUP"
-for file in background.js content.js files.js manifest.json policy.js popup.js popup.html; do
+for file in background.js content.js files.js manifest.json policy.js remote-policy.js popup.js popup.html; do
   [ -f "$DEST/$file" ] && cp "$DEST/$file" "$BACKUP/$file"
   cp "$TMP/extension/$file" "$DEST/$file"
 done
