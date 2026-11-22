@@ -37,6 +37,9 @@ def location(value):
     st = resolved.stat()
     if st.st_size <= 0 or st.st_size > MAX_FILE:
         raise ValueError('PDF is empty or exceeds the 80-MiB limit')
+    with resolved.open('rb') as stream:
+        if stream.read(5) != b'%PDF-':
+            raise ValueError('Selected file is not a valid PDF header')
     return resolved, st
 
 
