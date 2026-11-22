@@ -17,6 +17,7 @@ export function createTransferIngress({origin,dispatch}) {
   async function prepare(a) {
     if(a.action!=='begin' || !Number.isSafeInteger(a.size) ||
        a.size<=0 || a.size>LIMIT) throw Error('A valid begin transfer is required');
+    for(const [id,session] of sessions) if(Date.now()>session.expires) sessions.delete(id);
     if(sessions.size>=3) throw Error('Too many unfinished PDF transfers');
     const result=await dispatch('receive_file',a);
     const id=randomUUID(),token=randomBytes(32).toString('base64url');
