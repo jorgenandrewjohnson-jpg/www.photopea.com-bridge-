@@ -1,7 +1,9 @@
 import {route,openable,bridgeOrigin,isPdfPath,classifyUpload,contentBlockers} from './policy.js';
 import {getFile,listFiles,stage} from './files.js';
+import {validateRemoteManifest,decodeRemoteChunk,REMOTE_CHUNK_BYTES,REMOTE_TTL_MS} from './remote-policy.js';
 let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
 const uploads=new Map();
+const remoteTransfers=new Map();
 const popup=chrome.runtime.getURL('popup.html');
 const config=async()=> (await chrome.storage.local.get('pairing')).pairing;
 const ready=chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});
@@ -151,6 +153,74 @@ async function stageNative(a) {
     port?.disconnect();
   }
 }
+// Receive a verified PDF from an authenticated MCP client directly into the
+// paired Brave extension. No Desktop file, public URL or Render disk is used.
+// A failed, expired or interrupted transfer cannot be replayed as a KDP upload.
+async function receiveRemote(a) {
+  if (a.action==='begin') {
+    const {page}=await context(a.tab_id);
+    validateRemoteManifest(a,page);
+    const inspected=await inPage(a,'inspect');
+    if (a.document_id && inspected.document_id!==a.document_id)
+      throw Error('Content document changed; re-inspect the edition');
+    if (inspected.result.content_state?.saving || inspected.result.content_state?.unsaved_changes)
+      throw Error('KDP has unsaved changes or is saving');
+    if (a.kind==='cover' && inspected.result.content_state?.cover_status!=='missing')
+      throw Error('Cover is already present or cannot be verified; replacement is blocked');
+    if(remoteTransfers.size) throw Error('Finish or abort the existing PDF transfer first');
+    const transfer_id=crypto.randomUUID();
+    remoteTransfers.set(transfer_id,{
+      tab_id:a.tab_id,edition:a.edition,edition_id:a.edition_id,
+      kind:a.kind,name:a.name,size:a.size,sha256:a.sha256.toLowerCase(),
+      expected_path:page.path,received:0,next_index:0,parts:[],
+      expires:Date.now()+REMOTE_TTL_MS
+    });
+    return {transfer_id,chunk_bytes:REMOTE_CHUNK_BYTES,received:0,status:'receiving_in_brave'};
+  }
+  const t=remoteTransfers.get(a.transfer_id);
+  if (!t) throw Error('PDF transfer not found, expired or already completed');
+  if (a.action==='abort') {
+    remoteTransfers.delete(a.transfer_id);
+    return {aborted:true};
+  }
+  if (Date.now()>t.expires) {
+    remoteTransfers.delete(a.transfer_id);
+    throw Error('PDF transfer expired');
+  }
+  const {page}=await context(t.tab_id);
+  if(page.stage!=='content' || page.edition!==t.edition ||
+     page.edition_id!==t.edition_id || page.path!==t.expected_path) {
+    remoteTransfers.delete(a.transfer_id);
+    throw Error('KDP Content page changed during PDF receipt');
+  }
+  if (a.action==='append') {
+    if(a.index!==t.next_index) throw Error('Out-of-order or repeated PDF chunk');
+    const bytes=decodeRemoteChunk(a.data_base64);
+    if(t.received+bytes.length>t.size) throw Error('PDF exceeds declared size');
+    t.parts.push(bytes); t.received+=bytes.length; t.next_index++;
+    return {transfer_id:a.transfer_id,received:t.received,total:t.size,next_index:t.next_index};
+  }
+  if(a.action==='commit') {
+    if(t.received!==t.size) throw Error('Incomplete PDF receipt');
+    // Remove the uncommitted transfer even if hash validation fails.
+    remoteTransfers.delete(a.transfer_id);
+    const file=new File(t.parts,t.name,{type:'application/pdf'});
+    const header=new Uint8Array(await file.slice(0,5).arrayBuffer());
+    if(String.fromCharCode(...header)!=='%PDF-') throw Error('Invalid PDF header');
+    const digest=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());
+    const hash=Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('');
+    if(hash!==t.sha256) throw Error('PDF SHA-256 mismatch');
+    const inspected=await inPage({tab_id:t.tab_id},'inspect');
+    if(t.kind==='cover' && inspected.result.content_state?.cover_status!=='missing')
+      throw Error('Cover appeared during transfer; cannot replace it');
+    const file_id=await stage(file,page,t.kind);
+    return {file_id,filename:t.name,sha256:hash,size:t.size,
+      edition:t.edition,edition_id:t.edition_id,kind:t.kind,
+      status:'staged_in_brave_not_uploaded'};
+  }
+  throw Error('Unsupported receive_file action');
+}
+
 async function upload(a) {
   const f=await getFile(a.file_id);
   if (!f) throw Error('Selected artifact is missing');
@@ -208,6 +278,7 @@ async function run(op,a) {
 
     }
     case 'stage_file':return stageNative(a);
+    case 'receive_file':return receiveRemote(a);
     case 'open': {
       if(!openable(a.url)) throw Error('Unsupported publishing destination');
       const t=await chrome.tabs.create({url:a.url});return {tab_id:t.id,requested:a.url};
