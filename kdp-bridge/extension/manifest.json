@@ -1,11 +1,24 @@
 {
   "manifest_version": 3,
   "name": "Brave KDP Bridge (Private)",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pair Brave with your private publishing service for edition-specific KDP work.",
   "minimum_chrome_version": "116",
-  "permissions": ["activeTab", "scripting", "storage", "alarms"],
-  "host_permissions": ["https://kdp.amazon.com/*", "https://cc.amazon.com/*"],
-  "background": {"service_worker": "background.js", "type": "module"},
-  "action": {"default_popup": "popup.html"}
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://kdp.amazon.com/*",
+    "https://cc.amazon.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
 }
