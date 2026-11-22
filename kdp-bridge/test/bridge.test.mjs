@@ -12,6 +12,17 @@ test('publishing routes and sanitized identity',()=>{
   assert.equal(route(path+'?secret=opaque').path,path);
   assert.equal(route(path).edition_id,'AB123');
   assert.ok(openable(path));
+  const printContent='https://kdp.amazon.com/en_US/print-setup/hardcover/MDYZRKK4ZHV/content';
+  const printDetails='https://kdp.amazon.com/en_US/print-setup/hardcover/MDYZRKK4ZHV/details';
+  const printPricing='https://kdp.amazon.com/en_US/print-setup/hardcover/MDYZRKK4ZHV/pricing';
+  for (const [url, stage] of [[printContent,'content'],[printDetails,'details'],[printPricing,'pricing']]) {
+    assert.deepEqual(route(url),{edition:'hardcover',edition_id:'MDYZRKK4ZHV',stage,path:url});
+    assert.equal(openable(url),true);
+  }
+  assert.equal(openable(printContent+'?token=private'),false);
+  assert.equal(openable(printContent.replace('MDYZRKK4ZHV','new')),false);
+  assert.equal(route('https://evil.example/en_US/print-setup/hardcover/MDYZRKK4ZHV/content'),null);
+  assert.equal(route('https://kdp.amazon.com/en_US/print-setup/hardcover/MDYZRKK4ZHV/publish'),null);
   for(const url of [path+'?x=y','https://kdp.amazon.com/en_US/account','https://cc.amazon.com/?auth=test',path.replace('AB123','new'),path.replace('kdp.amazon.com','other.example')]) assert.ok(!openable(url));
   assert.throws(()=>bridgeOrigin('http://example.org'));
 });
