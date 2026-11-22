@@ -33,3 +33,10 @@ test('generic success or duplicate title text alone cannot mark the file accepte
   assert.equal(classifyUpload('Your files have been uploaded'),'unverified');
   assert.equal(classifyUpload('Cover has been approved, but no filename is listed'),'unverified');
 });
+
+test('matches the exact KDP file success notice and excludes unrelated approvals',()=>{
+  assert.equal(classifyUpload('Cover "my book.pdf" uploaded successfully!', 'my book.pdf'),'accepted_observed');
+  for (const text of ['my book.pdf not approved','other-my book.pdf successfully uploaded','my book.pdf\nOther.pdf approved']) {
+    assert.equal(classifyUpload(text,'my book.pdf'),'unverified');
+  }
+});

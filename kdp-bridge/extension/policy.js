@@ -39,7 +39,9 @@ export function classifyUpload(observedText, fileName='') {
     return 'processing';
   // A generic 'uploaded' elsewhere on the page is not filename-specific proof.
   const escaped=String(fileName||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  if (escaped && new RegExp(escaped+'[\\s\\S]{0,180}(?:successfully uploaded|upload complete|processed successfully|approved)','i').test(text))
+  const success=String.raw`(?:uploaded successfully|successfully uploaded|upload complete|processed successfully|approved)\b`;
+  const notice=new RegExp(String.raw`(?:^|["“]|^(?:Manuscript|Cover)\s+)${escaped}["”]?\s+${success}`,'im');
+  if (escaped && notice.test(text))
     return 'accepted_observed';
   return 'unverified';
 }

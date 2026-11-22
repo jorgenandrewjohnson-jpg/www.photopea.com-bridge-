@@ -1,6 +1,6 @@
 // Installed on demand in the isolated world of the selected top-level document.
 (() => {
-  if (globalThis.kdpPage) return;
+  // Inspection reinstalls the scanner after an in-place extension update.
   const controls = new Map();
   let transfer;
   const normal = value => (value || '').replace(/\s+/g,' ').trim();
@@ -43,14 +43,11 @@
     const nearCover=/book cover|cover file|upload your cover/i.test(nearby);
     const nearInterior=/manuscript|upload your manuscript|interior/i.test(nearby);
     if(nearCover!==nearInterior) return nearCover?'cover':'manuscript';
-    // Amazon sometimes places both file slots under one large container.
-    // Only use their documented order if exactly two slots are present.
-    const inputs=allElements().filter(x=>x.matches('input[type=file]'));
-    if(inputs.length===2) return inputs.indexOf(el)===0?'manuscript':'cover';
+    // A shared container or DOM order cannot identify an upload target.
     return null;
   }
   function capability(el,p) {
-    if (el.matches(':disabled,[aria-disabled="true"]') || el.readOnly) return;
+    if (el.matches(':disabled') || el.closest('[aria-disabled="true"],.a-button-disabled') || el.readOnly) return;
     if(el.matches('input[type=file]')) return fileKind(el,p);
     if(!visible(el)) return;
     const name=label(el);
@@ -90,25 +87,29 @@
   function contentState(p) {
     const body=normal(document.body?.innerText || '');
     const coverMissing=/no cover uploaded|launch cover creator to create your required cover/i.test(body);
-    const coverPresent=/cover (?:uploaded|approved|processed)|uploaded cover|replace (?:your )?cover/i.test(body);
-    const saving=/\bsaving\.{0,3}(?:\s|$)/i.test(body) || !!document.querySelector('[aria-busy="true"],.saving-spinner');
+    const coverPresent=/cover (?:uploaded|approved|processed)|uploaded cover|replace (?:your )?cover|cover ["“][^"”]+["”] uploaded successfully/i.test(body.replace(/no cover uploaded/gi,''));
+    const saving=/\bsaving\.{0,3}(?:\s|$)/i.test(body) || [...document.querySelectorAll('[aria-busy="true"],.saving-spinner')].some(visible);
     const unsaved=/unsaved changes|continue without saving|leave (?:this )?page without saving/i.test(body);
     const uploadError=/upload (?:failed|error)|file (?:rejected|invalid)|could not (?:upload|process)/i.test(body);
-    const preview=[...document.querySelectorAll('button,a,[role="button"],input[type="button"]')].find(el=>/launch (?:print )?previewer|preview your book/i.test(label(el)));
+    const previews=allElements().filter(el=>visible(el) && /^(?:launch (?:print |online )?previewer|preview your book)$/i.test(label(el)));
     return {cover_status:coverMissing&&coverPresent?'unknown':coverPresent?'present':coverMissing?'missing':'unknown',
       saving,unsaved_changes:unsaved,upload_error:uploadError,
-      preview_enabled:preview?!(preview.matches(':disabled,[aria-disabled="true"]')):null,
+      preview_enabled:previews.length?previews.every(el=>!el.matches(':disabled') && !el.closest('[aria-disabled="true"],.a-button-disabled') && !el.querySelector(':disabled')):null,
       preview_approval_required:/please preview and approve your book/i.test(body),
       observed_at:new Date().toISOString(),stage:p.stage};
   }
   function protectMutation(el,p,op) {
-    if (p.stage!=='content') return;
+    if (p.edition_id==='new') throw Error('A saved edition is required. Inspect the existing edition.');
+
     const state=contentState(p);
     if (state.saving || state.unsaved_changes) throw Error('KDP is saving or has unsaved changes; inspect and resolve before changing content');
+    if (p.stage!=='content') return;
+    if (/launch (?:print |online )?previewer|preview your book/i.test(label(el)) && state.preview_enabled!==true)
+      throw Error('The Previewer is disabled or unavailable.');
     const descriptor=identity(el)+' '+normal(el.closest('label,fieldset,section')?.innerText||'').slice(0,180).toLowerCase();
     const coverMode=op==='click' && el.matches('input[type=radio],[role=radio]') && (/(cover.creator|upload a cover you already have|print.ready pdf)/i.test(descriptor));
     if (coverMode && state.cover_status!=='missing') throw Error('Existing or unknown cover state: cover-mode changes are blocked to protect uploaded artwork');
-    if (op==='upload_begin' && state.cover_status!=='missing') throw Error('Existing or unknown cover state: cover replacement requires separate explicit authorization');
+    if (op==='cover_upload' && state.cover_status!=='missing') throw Error('Existing or unknown cover state: cover replacement requires separate explicit authorization');
   }
   function fingerprint() {
     const form=[...document.querySelectorAll('input,select,textarea')].filter(el=>el.type!=='hidden' && el.type!=='password' && el.type!=='file').map(el=>[el.name,el.value,el.checked]);
@@ -146,10 +147,40 @@
     }
     if (op==='preview_metadata') {
       if (p.stage!=='previewer' && p.stage!=='cover_creator') throw Error('Preview metadata only available in preview or cover creator');
-      const txt=normal(document.body?.innerText || '').slice(0,6000);
-      const labels=[...txt.matchAll(/page\s+\d+\s+(?:of|\/)\s*\d+|pages?\s+\d+\s*[-–]\s*\d+/gi)].map(m=>m[0]).slice(0,12);
-      const errors=alerts().map(safeText);
-      return {stage:p.stage,visible_page_labels:[...new Set(labels)],alerts:errors,
+      const inViewport=rect=>rect.width>0 && rect.height>0 && rect.bottom>0 &&
+        rect.right>0 && rect.top<innerHeight && rect.left<innerWidth;
+      const onScreen=el=>visible(el) && inViewport(el.getBoundingClientRect());
+      const labels=new Set(), warnings=new Set();
+      const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+      const range=document.createRange();
+      let node;
+      while ((node=walker.nextNode())) {
+        if (!normal(node.data) || !onScreen(node.parentElement)) continue;
+        range.selectNodeContents(node);
+        if (![...range.getClientRects()].some(inViewport)) continue;
+        const line=normal(node.data);
+        for (const match of node.data.matchAll(/\bpages?\s+\d+\s*(?:(?:of|\/)\s*\d+|[-–]\s*\d+)\b/gi)) {
+          const offset=match.index;
+          range.setStart(node,offset);
+          range.setEnd(node,offset+match[0].length);
+          if ([...range.getClientRects()].some(inViewport)) labels.add(match[0]);
+        }
+        if (/removed non-printable markup/i.test(line)) warnings.add(safeText(line));
+      }
+      for (const input of document.querySelectorAll('input')) {
+        if (!onScreen(input) || !/^(?:cover|\d+(?:\s*[-–]\s*\d+)?)$/i.test(input.value.trim())) continue;
+        let parent=input.parentElement;
+        for (let depth=0;parent && depth<5;depth++,parent=parent.parentElement) {
+          const nearby=normal(parent.innerText);
+          if (nearby.length>180) break;
+          const count=nearby.match(/page range\s*:[^/]*\/\s*(\d+)/i);
+          if (count) { labels.add(input.value.trim()+' / '+count[1]); break; }
+        }
+      }
+      for (const el of document.querySelectorAll('[role="alert"],.a-alert-error,.a-alert-warning,.error,.warning')) {
+        if (onScreen(el) && normal(el.innerText)) warnings.add(safeText(normal(el.innerText)).slice(0,600));
+      }
+      return {stage:p.stage,visible_page_labels:[...labels].slice(0,12),alerts:[...warnings],
         inspected_scope:'visible browser viewport only',complete_book_inspected:false};
     }
     if (op==='check') return true;
@@ -158,10 +189,12 @@
       const el=getControl(a,p,'click');
       protectMutation(el,p,'click');
       el.click();
+      controls.clear();
       return {dispatched:true,checked:el.checked??null,confirmation:'Inspect the destination and Amazon status.'};
     }
     if (op==='fill') {
       const el=getControl(a,p,'fill');
+      protectMutation(el,p,'fill');
       if (el.isContentEditable) el.textContent=a.value;
       else {
         const setter=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el),'value')?.set;
@@ -175,7 +208,7 @@
     if (op==='upload_begin') {
       if (p.edition_id!==a.edition_id || p.edition!==a.edition || p.edition_id==='new' || p.stage!=='content') throw Error('Staged edition does not match this Content page');
       const input=getControl(a,p,a.kind);
-      if (a.kind==='cover') protectMutation(input,p,'upload_begin');
+      protectMutation(input,p,a.kind+'_upload');
       transfer={...a,input,parts:[],bytes:0};
       return true;
     }
@@ -191,6 +224,7 @@
       }
       transfer=null;
       if (!f.size || f.bytes!==f.size) throw Error('Incomplete transfer');
+      protectMutation(f.input,p,f.kind+'_upload');
       const file=new File(f.parts,f.name,{type:f.mime});
       const dt=new DataTransfer(); dt.items.add(file); f.input.files=dt.files;
       for (const event of ['input','change']) f.input.dispatchEvent(new Event(event,{bubbles:true}));

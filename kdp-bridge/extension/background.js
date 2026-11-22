@@ -158,8 +158,8 @@ async function upload(a) {
   const id=crypto.randomUUID();
   const progress={operation_id:id,edition_id:metadata.edition_id,edition:metadata.edition,kind:metadata.kind,name:metadata.name,total_bytes:file.size,transferred_bytes:0,status:'transferring'};
   uploads.set(id,progress);
-  await inPage(a,'upload_begin',{...a,...metadata,id});
   try {
+    await inPage(a,'upload_begin',{...a,...metadata,id});
     const chunk=256*1024;
     for(let at=0;at<file.size;at+=chunk) {
       if (!paired) throw Error('Disconnected before transfer finished');
