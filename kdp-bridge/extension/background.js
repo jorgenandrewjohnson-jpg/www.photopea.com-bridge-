@@ -1,6 +1,7 @@
 import {route,openable,bridgeOrigin} from './policy.js';
 import {getFile,listFiles,stage} from './files.js';
 let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
+const uploads=new Map();
 const popup=chrome.runtime.getURL('popup.html');
 const config=async()=> (await chrome.storage.local.get('pairing')).pairing;
 const ready=chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});
@@ -151,6 +152,8 @@ async function upload(a) {
   if (!f) throw Error('Selected artifact is missing');
   const {file,...metadata}=f;
   const id=crypto.randomUUID();
+  const progress={operation_id:id,edition_id:metadata.edition_id,edition:metadata.edition,kind:metadata.kind,name:metadata.name,total_bytes:file.size,transferred_bytes:0,status:'transferring'};
+  uploads.set(id,progress);
   await inPage(a,'upload_begin',{...a,...metadata,id});
   try {
     const chunk=96*1024;
@@ -159,9 +162,14 @@ async function upload(a) {
       const bytes=new Uint8Array(await file.slice(at,at+chunk).arrayBuffer());
       let raw=''; for (const byte of bytes) raw+=String.fromCharCode(byte);
       await inPage(a,'upload_chunk',{id,index:at/chunk,data:btoa(raw)});
+      progress.transferred_bytes=Math.min(at+bytes.length,file.size);
     }
-    return {...(await inPage(a,'upload_commit',{id})),sha256:f.sha256};
-  } finally {await inPage(a,'upload_cancel',{id}).catch(()=>{});}
+    const outcome=await inPage(a,'upload_commit',{id});
+    progress.status='dispatched_to_amazon_unverified';
+    progress.sha256=f.sha256;
+    return {...outcome,operation_id:id,sha256:f.sha256};
+  } catch(e) {progress.status='failed_or_uncertain';progress.error=e.message;throw e;}
+  finally {await inPage(a,'upload_cancel',{id}).catch(()=>{});}
 }
 async function publish(a) {
   if(pendingPublish) throw Error('Another publication request is pending');
@@ -181,6 +189,12 @@ async function run(op,a) {
   switch(op) {
     case 'tabs':return (await chrome.tabs.query({url:['https://kdp.amazon.com/*','https://cc.amazon.com/*']})).flatMap(t=>{const p=route(t.url);return p?[{tab_id:t.id,active:t.active,...p}]:[];});
     case 'staged':return listFiles();
+    case 'upload_status': {
+      const {page}=await context(a.tab_id);
+      if(page.edition!==a.edition || page.edition_id!==a.edition_id || page.stage!=='content') throw Error('Edition mismatch');
+      const observed=await inPage(a,'processing');
+      return {operations:[...uploads.values()].filter(o=>o.edition===a.edition&&o.edition_id===a.edition_id),amazon:observed.result};
+    }
     case 'stage_file':return stageNative(a);
     case 'open': {
       if(!openable(a.url)) throw Error('Unsupported publishing destination');
