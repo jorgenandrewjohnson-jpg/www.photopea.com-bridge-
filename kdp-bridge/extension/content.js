@@ -6,7 +6,7 @@
   const normal = value => (value || '').replace(/\s+/g,' ').trim();
   const visible = el => el?.isConnected && el.getClientRects().length && getComputedStyle(el).visibility === 'visible';
   const alerts = () => [...new Set([...document.querySelectorAll('[role="alert"],.a-alert-error,.a-alert-warning,.error,.warning')].filter(visible).map(el=>normal(el.innerText).slice(0,600)).filter(Boolean))];
-  const label = el => normal(el.getAttribute('aria-label') || [...(el.labels || [])].map(l=>l.innerText).join(' ') || el.innerText || (['button','submit'].includes(el.type)?el.value:'') || el.placeholder || el.name || el.id).slice(0,200);
+  const label = el => normal(el.getAttribute('aria-label') || el.getAttribute('title') || [...(el.labels || [])].map(l=>l.innerText).join(' ') || el.innerText || (['button','submit'].includes(el.type)?el.value:'') || el.placeholder || el.getAttribute('data-action') || el.name || el.id).slice(0,200);
   const identity = el => [el.id,el.name,label(el)].join(' ').toLowerCase();
   const allowedField = /(?:title|subtitle|author|contributor|first.?name|last.?name|keyword|description|series.?name|book.?order|language|book.?number)/i;
   const ordinary = /^(?:save (?:as draft|draft|and continue)|save changes|launch (?:cover creator|previewer|print previewer|online previewer)|preview (?:your )?book|next(?: page)?|previous(?: page)?|back|continue setup|edit (?:ebook|kindle ebook|paperback|hardcover) (?:details|content|pricing)|(?:\+\s*)?create (?:kindle ebook|paperback|hardcover|series)|(?:choose|select) (?:design|layout|template)|save (?:cover|and exit)|(?:paperback|hardcover|kindle ebook) (?:details|content|rights & pricing))$/i;
@@ -27,7 +27,7 @@
     const found=[];
     const walk=root=>{
       for (const el of root.querySelectorAll('*')) {
-        if (el.matches('input,select,textarea,[contenteditable=true],button,a,[role=button],[role=radio],[role=checkbox],[role=tab]')) found.push(el);
+        if (el.matches('input,select,textarea,[contenteditable=true],button,a,[role=button],[role=radio],[role=checkbox],[role=tab],[role=menuitem],[tabindex="0"],.a-button')) found.push(el);
         if (el.shadowRoot) walk(el.shadowRoot);
       }
     };
@@ -58,7 +58,7 @@
     if(el.matches('input[type=radio],input[type=checkbox],[role=radio],[role=checkbox]')) {
       if(['details','content','pricing','rights-and-pricing','cover_creator'].includes(p.stage)) return 'click';
     }
-    if(el.matches('button,[role=button],[role=tab],a,input[type=submit],input[type=button]')) {
+    if(el.matches('button,[role=button],[role=tab],[role=menuitem],[tabindex="0"],.a-button,a,input[type=submit],input[type=button]')) {
       const href=el.getAttribute('href');
       if(href && (href.startsWith('javascript:') || (href.startsWith('http') && !/^https:\/\/(?:kdp\.amazon\.com|cc\.amazon\.com)\//.test(href)))) return;
       if(!name || name.length>200) return;
