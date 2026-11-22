@@ -78,8 +78,11 @@ def main():
         length = struct.unpack('<I', raw)[0]
         if length < 2 or length > 4096:
             break
+        a = None
         try:
             a = json.loads(sys.stdin.buffer.read(length))
+            if not isinstance(a, dict):
+                raise ValueError('Expected a JSON object')
             reply({'id': a.get('id'), **handle(a)})
         except Exception as exc:
             reply({'id': a.get('id') if isinstance(a, dict) else None, 'ok': False, 'error': str(exc)[:300]})
