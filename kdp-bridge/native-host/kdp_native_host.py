@@ -46,7 +46,7 @@ def location(value):
 def handle(a):
     action = a.get('action')
     if action == 'health':
-        return {'ok': True, 'version': '0.3.2'}
+        return {'ok': True, 'version': '0.3.3'}
     path, st = location(a.get('path'))
     if action == 'stat':
         return {'ok': True, 'name': path.name, 'size': st.st_size,
