@@ -31,7 +31,7 @@ function dispatch() {
   }
   activeId = id;
   job.state = 'running';
-  job.timer = setTimeout(() => finish(id, Error('Operation outcome unknown. Reinspect KDP before retrying.')), job.op === 'publish' ? 125000 : 65000);
+  job.timer = setTimeout(() => finish(id, Error('Operation outcome unknown. Reinspect KDP before retrying.')), job.op === 'publish' ? 125000 : ['stage_file','upload'].includes(job.op) ? 300000 : 65000);
   job.ws.send(JSON.stringify({type:'command',id,op:job.op,args:job.args}), err => {
     if (err) finish(id,err);
   });
