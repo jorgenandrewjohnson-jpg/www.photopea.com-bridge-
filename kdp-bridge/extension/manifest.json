@@ -1,35 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Brave KDP Bridge (Private)",
-  "version": "0.1.0",
-  "description": "Brave browser pairing for user-authorized Amazon KDP Bookshelf and Cover Creator",
-  "permissions": [
-    "tabs",
-    "activeTab",
-    "scripting",
-    "storage"
-  ],
-  "host_permissions": [
-    "https://kdp.amazon.com/*",
-    "https://cc.amazon.com/*"
-  ],
-  "background": {
-    "service_worker": "background.js"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://kdp.amazon.com/*",
-        "https://cc.amazon.com/*"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ],
-  "action": {
-    "default_popup": "popup.html"
-  },
-  "minimum_chrome_version": "116"
+  "version": "0.2.0",
+  "description": "Pair Brave with your private publishing service for edition-specific KDP work.",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "storage", "alarms"],
+  "host_permissions": ["https://kdp.amazon.com/*", "https://cc.amazon.com/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_popup": "popup.html"}
 }

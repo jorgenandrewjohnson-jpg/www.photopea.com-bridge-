@@ -1,76 +1,168 @@
-let ws=null,paired=false,origin='',staged=new Map(),staging=new Map(),armed=null,ping=null;
-const amazon=url=>{try{return new URL(url).protocol==='https:'&&['kdp.amazon.com','cc.amazon.com'].includes(new URL(url).hostname)}catch{return false}};
-const clean=url=>{try{const u=new URL(url);return u.origin+u.pathname}catch{return ''}};
-const tabs=async()=>{const t=await chrome.tabs.query({});return t.filter(x=>amazon(x.url)).map(x=>({id:x.id,title:x.title,url:clean(x.url),active:x.active,windowId:x.windowId}))};
-const target=async(id)=>{const t=(await chrome.tabs.query({})).filter(x=>amazon(x.url));const x=id?t.find(a=>a.id===id):t.find(a=>a.active)||t.at(-1);if(!x)throw Error('Open KDP or Amazon Cover Creator in Chrome and sign in');return x};
-async function script(id,op,a){
- const out=await chrome.scripting.executeScript({target:{tabId:id},func:(op,a)=>{
- const find=()=>{if(a.selector)return document.querySelector(a.selector);const q=String(a.text||a.label||'').trim().toLowerCase();const all=Array.from(document.querySelectorAll('button,a,label,[role=button],input,textarea,select'));let x=all.find(el=>(el.innerText||el.value||el.getAttribute('aria-label')||el.getAttribute('placeholder')||'').trim().toLowerCase()===q);if(!x)x=all.find(el=>(el.innerText||'').trim().toLowerCase().includes(q));if(x?.tagName==='LABEL')return x.control||document.getElementById(x.htmlFor)||x;return x};
- const visible=x=>!!(x.offsetWidth||x.offsetHeight||x.getClientRects().length);
- const clean=x=>{try{const u=new URL(x);return u.origin+u.pathname}catch{return ''}};
- if(op==='inspect')return {url:clean(location.href),title:document.title,headings:Array.from(document.querySelectorAll('h1,h2,h3')).filter(visible).slice(0,30).map(x=>x.innerText?.trim()),controls:Array.from(document.querySelectorAll('input,textarea,select,button,a,[role=button]')).filter(visible).slice(0,170).map(x=>({tag:x.tagName,id:x.id||null,name:x.name||null,type:x.type||null,label:(x.labels?Array.from(x.labels).map(y=>y.textContent).join(' '):x.getAttribute('aria-label')||x.getAttribute('placeholder')||x.innerText||'').trim().slice(0,120),disabled:x.disabled||false})),alerts:Array.from(document.querySelectorAll('[role=alert],[class*=error],[class*=warning]')).filter(visible).slice(0,25).map(x=>x.innerText?.slice(0,500)),text:(document.body?.innerText||'').slice(0,14000),note:'DOM inspection is not visual QA'};
- if(op==='scroll'){window.scrollBy(Number(a.x||0),Number(a.y||700));return {x:scrollX,y:scrollY}};
- const el=find();if(!el)throw Error('Control not found');
- const label=(el.innerText||el.value||el.getAttribute('aria-label')||'').trim();
- if(op==='click'||op==='publish'){
-   if(op==='click'&&/(publish|submit\s+(book|your|edition)|delete|unpublish|terminate)/i.test(label))throw Error('High-impact action blocked');
-   if(op==='publish'&&!/(publish|submit)/i.test(label))throw Error('Selected control is not a publication control');
-   if(el.disabled)throw Error('Control disabled');
-   el.click();return {clicked:true,label,note:'Click dispatched; inspect KDP again to confirm saved state'};
- }
- if(op==='fill'){
-  if(!['INPUT','TEXTAREA','SELECT'].includes(el.tagName))throw Error('Not a form field');
-  if(/password|file|hidden/i.test(el.type||'')||/bank|tax|card|otp|secret/i.test(label))throw Error('Sensitive field');
-  if(el.tagName==='SELECT')el.value=a.value;else {const proto=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(el,String(a.value))}
-  el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return {filled:true,label,unsaved:true};
- }
- throw Error('Unknown action');
- },args:[op,a]});
- return out[0]?.result;
+import {route,openable,bridgeOrigin} from './policy.js';
+import {getFile,listFiles} from './files.js';
+let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
+const popup=chrome.runtime.getURL('popup.html');
+const config=async()=> (await chrome.storage.local.get('pairing')).pairing;
+const ready=chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});
+async function connect() {
+  await ready;
+  const c=await config();
+  if (!c || (socket && socket.readyState<=1)) return;
+  const ws=new WebSocket(bridgeOrigin(c.origin).replace(/^http/,'ws')+'/browser');
+  socket=ws;
+  ws.onopen=()=>ws.send(JSON.stringify(c.device?{type:'pair',device:c.device,proof:c.proof}:{type:'enroll'}));
+  ws.onmessage=async({data})=>{
+    if (socket!==ws) return;
+    try {
+      const m=JSON.parse(data);
+      if (m.type==='challenge') {challenge=m.code;return;}
+      if (m.type==='credential') {
+        if (!challenge || !(await config()) || socket!==ws) return;
+        await chrome.storage.local.set({pairing:{origin:c.origin,device:m.device,proof:m.proof}});
+        if (socket===ws) ws.send(JSON.stringify({type:'pair',device:m.device,proof:m.proof}));
+        return;
+      }
+      if (m.type==='paired') {
+        paired=true; challenge=''; lastError='';
+        heartbeat=setInterval(()=>{if(ws.readyState===1)ws.send('{"type":"heartbeat"}');},20000);
+        return;
+      }
+      if (m.type!=='command' || !paired) return;
+      let reply;
+      try {reply={ok:true,value:await run(m.op,m.args)};}
+      catch(e){reply={ok:false,error:e.message};}
+      if (socket===ws && ws.readyState===1) ws.send(JSON.stringify({type:'result',id:m.id,...reply}));
+    } catch {ws.close();}
+  };
+  ws.onclose=event=>{
+    if (socket!==ws) return;
+    stop();
+    lastError=event.reason || 'Disconnected. Reconnect will be attempted.';
+  };
 }
-async function run(op,a={}){
- if(op==='tabs')return {tabs:await tabs()};
- if(op==='staged')return {files:Array.from(staged.values()).map(f=>({filename:f.name,bytes:f.size,mimeType:f.mimeType,not_uploaded:true}))};
- if(op==='open'){if(!amazon(a.url))throw Error('Only KDP/CC HTTPS addresses allowed');const t=await chrome.tabs.create({url:a.url});return {opened:true,tab_id:t.id,url:clean(a.url)}}
- const t=await target(a.tab_id);
- if(['inspect','click','fill','scroll'].includes(op))return {tab_id:t.id,...await script(t.id,op,a)};
- if(op==='capture'){if(!t.active)throw Error('Activate the KDP tab first to allow Chrome screenshot capture');return {tab_id:t.id,dataUrl:await chrome.tabs.captureVisibleTab(t.windowId,{format:'png'})}}
- if(op==='upload'){
-  const f=staged.get(a.filename);if(!f)throw Error('First stage the exact file using extension popup');
-  let r=await chrome.tabs.sendMessage(t.id,{type:'upload_begin',id:f.name,name:f.name,mimeType:f.mimeType,parts:f.parts.length,selector:a.selector||''});
-  if(!r?.ok)throw Error(r?.error||'Upload begin failed');
-  for(let i=0;i<f.parts.length;i++){r=await chrome.tabs.sendMessage(t.id,{type:'upload_chunk',id:f.name,index:i,data:f.parts[i]});if(!r?.ok)throw Error(r?.error||'Upload chunk failed')}
-  r=await chrome.tabs.sendMessage(t.id,{type:'upload_commit',id:f.name});if(!r?.ok)throw Error(r?.error||'Upload failed');
-  return {...r,tab_id:t.id,note:'Browser file input populated; KDP processing and acceptance must be checked separately'};
- }
- if(op==='publish'){
-  if(!armed||Date.now()>armed.until||armed.title!==a.title||armed.edition!==a.edition)throw Error('User must arm exact title and edition in extension within five minutes, after approving in chat');
-  if(!/(publish|submit)/i.test(a.button_text||''))throw Error('Specify exact Publish/Submit button');
-  armed=null;return {tab_id:t.id,...await script(t.id,'publish',{text:a.button_text}),note:'One-time click attempted; not proof of KDP publication'};
- }
- throw Error('Unknown command');
+function stop() {
+  const old=socket; socket=null; paired=false; challenge='';
+  clearInterval(heartbeat);
+  if (pendingPublish) pendingPublish.decide(false);
+  old?.close();
 }
-async function pair(url,token){
- if(!/^https:\/\/[-a-z0-9.]+(?::\d+)?$/i.test(url)||token.length<32)throw Error('Use Render HTTPS address and 32+ character BRIDGE_TOKEN');
- if(ws)ws.close();paired=false;origin=url;ws=new WebSocket(url.replace(/^https:/,'wss:')+'/browser');
- ws.onopen=()=>ws.send(JSON.stringify({type:'pair',token}));
- ws.onclose=()=>{paired=false;if(ping)clearInterval(ping)};
- ws.onerror=()=>{paired=false};
- ws.onmessage=async e=>{let m;try{m=JSON.parse(e.data)}catch{return}
-  if(m.type==='paired'){paired=true;if(ping)clearInterval(ping);ping=setInterval(()=>{if(ws?.readyState===1)ws.send(JSON.stringify({type:'heartbeat'}))},20000);return}
-  if(m.type==='command'){let value,error,ok=true;try{value=await run(m.op,m.args||{})}catch(e){ok=false;error=e.message}if(ws?.readyState===1)ws.send(JSON.stringify({type:'result',id:m.id,ok,value,error}))}
- };
- return {connecting:true};
+chrome.alarms.onAlarm.addListener(a=>{if(a.name==='kdp-reconnect') void connect().catch(()=>{});});
+async function wake() {
+  if (!await chrome.alarms.get('kdp-reconnect')) await chrome.alarms.create('kdp-reconnect',{periodInMinutes:1});
+  await connect();
+}
+chrome.runtime.onStartup.addListener(()=>void wake());
+chrome.runtime.onInstalled.addListener(()=>void wake());
+void wake().catch(()=>{});
+
+async function context(id) {
+  const t=await chrome.tabs.get(id);
+  const page=route(t.url);
+  if (!page || t.pendingUrl) throw Error('Select a supported, fully loaded publishing page in Brave');
+  return {t,page};
+}
+async function inPage(a,op,payload=a) {
+  const {t,page}=await context(a.tab_id);
+  if (a.expected_path && a.expected_path!==page.path) throw Error('Page changed. Inspect again.');
+  const target={tabId:t.id,...(a.document_id?{documentIds:[a.document_id]}:{frameIds:[0]})};
+  if (op==='inspect') {
+    const [loaded]=await chrome.scripting.executeScript({target,files:['content.js']});
+    delete target.frameIds;target.documentIds=[loaded.documentId];
+  }
+  const [out]=await chrome.scripting.executeScript({target,func:(op,args,page,expectedUrl)=>{
+    try {
+      if(location.href!==expectedUrl) throw Error('Document changed');
+      return {ok:true,result:globalThis.kdpPage(op,args,page)};
+    } catch(e) {return {ok:false,error:e.message};}
+  },args:[op,payload,page,t.url]});
+  if (!out?.result?.ok) throw Error(out?.result?.error || 'Document unavailable');
+  return {tab_id:t.id,document_id:out.documentId,expected_path:page.path,result:out.result.result};
+}
+async function capture(a) {
+  const {t,page}=await context(a.tab_id);
+  if (!['previewer','cover_creator'].includes(page.stage)) throw Error('Capture is restricted to Previewer and Cover Creator');
+  if (!t.active) throw Error('Activate the Previewer tab and click the extension icon to grant capture access');
+  let changed=false;
+  const activated=info=>{if(info.windowId===t.windowId) changed=true;};
+  const updated=(id,change)=>{if(id===t.id && (change.url || change.status==='loading')) changed=true;};
+  chrome.tabs.onActivated.addListener(activated);chrome.tabs.onUpdated.addListener(updated);
+  try {
+    await inPage(a,'check');
+    const data=await chrome.tabs.captureVisibleTab(t.windowId,{format:'png'});
+    const [active]=await chrome.tabs.query({windowId:t.windowId,active:true});
+    await inPage(a,'check');
+    if(changed || active?.id!==t.id) throw Error('Tab changed during capture');
+    return {page:{...page,tab_id:t.id,document_id:a.document_id},data:data.split(',')[1]};
+  } finally {chrome.tabs.onActivated.removeListener(activated);chrome.tabs.onUpdated.removeListener(updated);}
+}
+async function upload(a) {
+  const f=await getFile(a.file_id);
+  if (!f) throw Error('Selected artifact is missing');
+  const {file,...metadata}=f;
+  const id=crypto.randomUUID();
+  await inPage(a,'upload_begin',{...a,...metadata,id});
+  try {
+    const chunk=96*1024;
+    for(let at=0;at<file.size;at+=chunk) {
+      if (!paired) throw Error('Disconnected before transfer finished');
+      const bytes=new Uint8Array(await file.slice(at,at+chunk).arrayBuffer());
+      let raw=''; for (const byte of bytes) raw+=String.fromCharCode(byte);
+      await inPage(a,'upload_chunk',{id,index:at/chunk,data:btoa(raw)});
+    }
+    return {...(await inPage(a,'upload_commit',{id})),sha256:f.sha256};
+  } finally {await inPage(a,'upload_cancel',{id}).catch(()=>{});}
+}
+async function publish(a) {
+  if(pendingPublish) throw Error('Another publication request is pending');
+  const review=await inPage(a,'review_publish');
+  const expires=Date.now()+90000, request_id=crypto.randomUUID();
+  let decide;
+  const decision=new Promise(resolve=>{decide=resolve;});
+  pendingPublish={args:a,button:review.result.button,request_id,expires,decide};
+  const timer=setTimeout(()=>decide(false),90000);
+  await chrome.action.setBadgeText({text:'ASK'});
+  try {
+    if (!await decision || Date.now()>expires || !paired) throw Error('Publication request expired or declined');
+    return await inPage(a,'publish');
+  } finally {clearTimeout(timer);pendingPublish=null;await chrome.action.setBadgeText({text:''});}
+}
+async function run(op,a) {
+  switch(op) {
+    case 'tabs':return (await chrome.tabs.query({url:['https://kdp.amazon.com/*','https://cc.amazon.com/*']})).flatMap(t=>{const p=route(t.url);return p?[{tab_id:t.id,active:t.active,...p}]:[];});
+    case 'staged':return listFiles();
+    case 'open': {
+      if(!openable(a.url)) throw Error('Unsupported publishing destination');
+      const t=await chrome.tabs.create({url:a.url});return {tab_id:t.id,requested:a.url};
+    }
+    case 'capture':return capture(a);
+    case 'upload':return upload(a);
+    case 'publish':return publish(a);
+    case 'inspect':case 'fill':case 'click':case 'scroll':return inPage(a,op);
+    default:throw Error('Unknown operation');
+  }
 }
 chrome.runtime.onMessage.addListener((m,s,reply)=>{
- (async()=>{
- if(m.type==='status')return {paired,origin,files:Array.from(staged.keys()),armed:!!armed&&armed.until>Date.now()};
- if(m.type==='pair')return pair(m.url,m.token);
- if(m.type==='disconnect'){ws?.close();ws=null;paired=false;armed=null;return {disconnected:true}};
- if(m.type==='stage_begin'){if(m.size>80*1024*1024)throw Error('80 MB staging limit');staging.set(m.name,{name:m.name,size:m.size,mimeType:m.mimeType||'application/octet-stream',parts:[]});return {ok:true}};
- if(m.type==='stage_chunk'){const f=staging.get(m.name);if(!f||m.index!==f.parts.length)throw Error('Unexpected chunk');f.parts.push(m.data);return {ok:true}};
- if(m.type==='stage_done'){const f=staging.get(m.name);if(!f)throw Error('No file');staged.set(f.name,f);staging.delete(f.name);return {staged:true,filename:f.name}};
- if(m.type==='arm'){if(!m.confirmed||!m.title||!['paperback','hardcover','kindle_ebook'].includes(m.edition))throw Error('Enter title, edition and check approval');armed={title:m.title,edition:m.edition,until:Date.now()+300000};return {armed:true,expires_in_seconds:300}};
- throw Error('Unknown extension command');
- })().then(reply).catch(e=>reply({error:e.message}));return true;
+  if (s.id!==chrome.runtime.id || s.url!==popup) return;
+  (async()=>{
+    await ready;
+    if (m.type==='status') {
+      const c=await config();
+      const p=pendingPublish;
+      return {origin:c?.origin,paired,challenge,lastError,publication:p?{...p.args,button:p.button,request_id:p.request_id,expires:p.expires}:null};
+    }
+    if (m.type==='pair') {
+      const origin=bridgeOrigin(m.origin);
+      stop();lastError='';
+      await chrome.storage.local.set({pairing:{origin}});await connect();return {connecting:true};
+    }
+    if (m.type==='disconnect') {await chrome.storage.local.remove('pairing');stop();return {disconnected:true};}
+    if (m.type==='confirm') {
+      const p=pendingPublish;
+      const [active]=await chrome.tabs.query({active:true,lastFocusedWindow:true});
+      if (!p || p.request_id!==m.request_id || Date.now()>p.expires || active?.id!==p.args.tab_id) throw Error('Activate the exact pricing tab with the current publication request');
+      p.decide(m.approve===true);return {received:true};
+    }
+    throw Error('Unknown extension operation');
+  })().then(reply).catch(e=>reply({error:e.message}));
+  return true;
 });

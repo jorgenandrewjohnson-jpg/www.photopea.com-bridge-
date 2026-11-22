@@ -1,0 +1,32 @@
+import {randomBytes,createHash} from 'node:crypto';
+import assert from 'node:assert/strict';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+export async function connectClient(origin,key,uri='https://chatgpt.com/connector_platform_oauth_redirect') {
+  const resource=origin+'/mcp';
+  const endpoint=async(path,options)=>fetch(origin+path,{...options,redirect:'manual'});
+  const metadata=await (await endpoint('/.well-known/oauth-protected-resource/mcp')).json();
+  assert.equal(metadata.resource,resource);
+  const reg=await endpoint('/oauth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({redirect_uris:[uri],token_endpoint_auth_method:'none'})});
+  assert.equal(reg.status,201);
+  const {client_id}=await reg.json();
+  const verifier=randomBytes(32).toString('base64url');
+  const state=randomBytes(20).toString('hex');
+  const params=new URLSearchParams({client_id,resource,redirect_uri:uri,response_type:'code',state,code_challenge_method:'S256',code_challenge:createHash('sha256').update(verifier).digest('base64url')});
+  const consent=await endpoint('/oauth/authorize?'+params);
+  assert.equal(consent.status,200);
+  const flow=(await consent.text()).match(/name="flow" value="([^"]+)"/)[1];
+  const approval=await endpoint('/oauth/authorize',{method:'POST',headers:{Origin:origin,Cookie:consent.headers.get('set-cookie').split(';')[0]},body:new URLSearchParams({flow,key,decision:'allow'})});
+  assert.equal(approval.status,303);
+  const location=new URL(approval.headers.get('location'));
+  assert.equal(location.origin+location.pathname,uri);
+  assert.equal(location.searchParams.get('state'),state);
+  const body=new URLSearchParams({client_id,resource,redirect_uri:uri,grant_type:'authorization_code',code:location.searchParams.get('code'),code_verifier:verifier});
+  const token=await endpoint('/oauth/token',{method:'POST',body});
+  assert.equal(token.status,200);
+  const {access_token}=await token.json();
+  assert.equal((await endpoint('/oauth/token',{method:'POST',body})).status,400);
+  const client=new Client({name:'kdp-verification',version:'1.0.0'});
+  await client.connect(new StreamableHTTPClientTransport(new URL(resource),{requestInit:{headers:{Authorization:'Bearer '+access_token}}}));
+  return client;
+}
