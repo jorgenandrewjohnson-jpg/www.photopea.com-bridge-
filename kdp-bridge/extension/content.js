@@ -90,12 +90,12 @@
   function contentState(p) {
     const body=normal(document.body?.innerText || '');
     const coverMissing=/no cover uploaded|launch cover creator to create your required cover/i.test(body);
-    const coverPresent=/cover (?:uploaded|approved|processed)|uploaded cover|replace (?:your )?cover/i.test(body) && !coverMissing;
+    const coverPresent=/cover (?:uploaded|approved|processed)|uploaded cover|replace (?:your )?cover/i.test(body);
     const saving=/\bsaving\.{0,3}(?:\s|$)/i.test(body) || !!document.querySelector('[aria-busy="true"],.saving-spinner');
     const unsaved=/unsaved changes|continue without saving|leave (?:this )?page without saving/i.test(body);
     const uploadError=/upload (?:failed|error)|file (?:rejected|invalid)|could not (?:upload|process)/i.test(body);
     const preview=[...document.querySelectorAll('button,a,[role="button"],input[type="button"]')].find(el=>/launch (?:print )?previewer|preview your book/i.test(label(el)));
-    return {cover_status:coverMissing?'missing':coverPresent?'present':'unknown',
+    return {cover_status:coverMissing&&coverPresent?'unknown':coverPresent?'present':coverMissing?'missing':'unknown',
       saving,unsaved_changes:unsaved,upload_error:uploadError,
       preview_enabled:preview?!(preview.matches(':disabled,[aria-disabled="true"]')):null,
       preview_approval_required:/please preview and approve your book/i.test(body),
