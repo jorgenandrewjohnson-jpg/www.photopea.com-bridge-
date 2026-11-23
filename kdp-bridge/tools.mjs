@@ -40,6 +40,13 @@ export function createMcp(browser) {
   },false,a=>a.action==='begin'?browser.prepareTransfer(a):
     (a.action==='append' && a.index===0 && a.data_base64?.startsWith('oaisignedurl1:'))?
       browser.pullTransfer(a):browser.call('receive_file',a));
+  // A discoverable one-call alternative to the legacy oaisignedurl1: sentinel.
+  // The signed source must pass the strict host/path allowlist in http-transfer.mjs.
+  // This stages only; uploading to Amazon still requires an explicit upload_file call.
+  register('import_signed_chatgpt_pdf',
+    'Import an approved ChatGPT PDF using its short-lived signed OpenAI file URL into an already begun, edition-bound transfer. Requires the transfer_id from receive_file begin. This stages the PDF in Brave but does not upload or publish it. Only the allowlisted signed OpenAI file host is accepted.',
+    {transfer_id:z.string().uuid(),signed_url:z.string().url().max(2400)},false,
+    a=>browser.pullTransfer({action:'append',transfer_id:a.transfer_id,index:0,data_base64:'oaisignedurl1:'+a.signed_url}));
   register('upload_file','Upload an edition-bound PDF, EPUB or Kindle cover image received through kdp_receive_file, using a freshly inspected exact KDP file input. Verify Amazon processing separately; dispatch alone is not acceptance.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_staged_file','Send selected local artifact to a matching Content file input. Check Amazon processing separately.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_status','Inspect browser upload transfer records and Amazon processing notices for the exact edition; do not infer acceptance from a dispatched upload.',{...page,edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text},true,a=>browser.call('upload_status',a));
