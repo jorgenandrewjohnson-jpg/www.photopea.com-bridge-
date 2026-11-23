@@ -9,11 +9,16 @@ export function validateRemoteManifest(a, page) {
       page.edition !== a.edition || page.edition_id !== a.edition_id ||
       (a.expected_path && a.expected_path !== page.path))
     throw Error('Select the exact saved KDP edition Content page');
-  if (!['cover','manuscript'].includes(a.kind)) throw Error('Invalid PDF role');
-  if (typeof a.name !== 'string' || a.name.length > 180 ||
-      !/^[a-zA-Z0-9][a-zA-Z0-9 _().+-]*\.pdf$/i.test(a.name) ||
-      a.name.includes('..'))
-    throw Error('Use a simple PDF filename without paths');
+  if (!['cover','manuscript'].includes(a.kind)) throw Error('Invalid file role');
+  const isEbook=['kindle','kindle-ebook','ebook'].includes(a.edition);
+  const extensions = a.kind==='cover' ? (isEbook?['jpg','jpeg','png']:['pdf']) :
+    (isEbook?['epub','docx','kpf','pdf']:['pdf']);
+  const name=String(a.name||'');
+  const ext=name.split('.').pop().toLowerCase();
+  if(name.length<5 || name.length>180 || name.includes('..') ||
+     !/^[a-zA-Z0-9][a-zA-Z0-9 _().+-]*\.[a-zA-Z0-9]+$/.test(name) ||
+     !extensions.includes(ext))
+    throw Error('Use a supported Kindle or print artifact filename without paths');
   if (!Number.isSafeInteger(a.size) || a.size <= 0 || a.size > REMOTE_MAX_BYTES)
     throw Error('Invalid PDF size (maximum 250 MiB)');
   if (!/^[a-f0-9]{64}$/i.test(a.sha256 || ''))
