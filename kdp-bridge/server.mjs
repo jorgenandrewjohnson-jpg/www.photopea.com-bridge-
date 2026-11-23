@@ -61,6 +61,7 @@ const browser = {
 };
 const ingress=createTransferIngress({origin,dispatch:(op,args)=>browser.call(op,args)});
 browser.prepareTransfer=a=>ingress.prepare(a);
+browser.pullTransfer=a=>ingress.pull(a);
 function finish(id,err,value) {
   const job=requests.get(id);
   if (!job) return;
