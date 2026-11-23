@@ -79,5 +79,70 @@ export function createTransferIngress({origin,dispatch}) {
       errorReply();
     }
   }
-  return {prepare,handle};
+  // Transfer an approved ChatGPT-file snapshot via a short-lived, signed
+  // OpenAI file URL. This runs entirely inside the authenticated MCP session;
+  // no Mac helper, open proxy, public Drive share, or Render storage is used.
+  async function pull(a) {
+    if(a.action!=='append' || a.index!==0 ||
+       typeof a.data_base64!=='string' ||
+       !a.data_base64.startsWith('oaisignedurl1:'))
+      throw Error('Invalid signed PDF import request');
+    const match=[...sessions.entries()].find(([,s])=>s.transfer_id===a.transfer_id);
+    if(!match || Date.now()>match[1].expires)
+      throw Error('PDF receipt has expired or was not prepared');
+    const [sessionId,session]=match;
+    const text=a.data_base64.slice('oaisignedurl1:'.length);
+    if(text.length<50 || text.length>2400)
+      throw Error('Invalid signed source length');
+    let url;
+    try {url=new URL(text);} catch {throw Error('Invalid signed source URL');}
+    // A strict host/path allowlist prevents the bridge from serving as an
+    // arbitrary URL fetcher or reaching private networks.
+    if(url.protocol!=='https:' ||
+       url.hostname!=='sdmntprnorthcentralus.oaiusercontent.com' ||
+       url.port || url.username || url.password ||
+       !/^\/files\/[a-f0-9-]{36}\/raw$/.test(url.pathname) ||
+       !url.search)
+      throw Error('Signed source is outside the approved file host');
+    sessions.delete(sessionId); // One use, including on failure.
+    const aborter=new AbortController();
+    const timer=setTimeout(()=>aborter.abort(),180000);
+    let index=0,total=0,carry=Buffer.alloc(0);
+    try {
+      const response=await fetch(url,{redirect:'error',signal:aborter.signal,cache:'no-store'});
+      if(!response.ok || !response.body)
+        throw Error('Approved source could not be retrieved');
+      const declared=response.headers.get('content-length');
+      if(declared && Number(declared)!==session.size)
+        throw Error('Source byte length does not match the approved PDF');
+      for await(const chunk of response.body) {
+        if(total+chunk.length>session.size)
+          throw Error('Source PDF exceeds approved size');
+        total+=chunk.length;
+        carry=Buffer.concat([carry,Buffer.from(chunk)]);
+        while(carry.length>=CHUNK) {
+          await dispatch('receive_file',{
+            action:'append',transfer_id:session.transfer_id,
+            index:index++,data_base64:carry.subarray(0,CHUNK).toString('base64')
+          });
+          carry=carry.subarray(CHUNK);
+        }
+      }
+      if(total!==session.size) throw Error('Source PDF was incomplete');
+      if(carry.length) await dispatch('receive_file',{
+        action:'append',transfer_id:session.transfer_id,
+        index:index++,data_base64:carry.toString('base64')
+      });
+      const result=await dispatch('receive_file',{
+        action:'commit',transfer_id:session.transfer_id
+      });
+      return {status:'staged_in_brave_not_uploaded',...result};
+    } catch(error) {
+      await dispatch('receive_file',{
+        action:'abort',transfer_id:session.transfer_id
+      }).catch(()=>{});
+      throw Error('Signed PDF import failed: '+String(error.message||error).slice(0,140));
+    } finally {clearTimeout(timer);}
+  }
+  return {prepare,handle,pull};
 }
