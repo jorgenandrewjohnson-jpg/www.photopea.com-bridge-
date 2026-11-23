@@ -27,7 +27,7 @@
     const found=[];
     const walk=root=>{
       for (const el of root.querySelectorAll('*')) {
-        if (el.matches('input,select,textarea,[contenteditable=true],button,a,[role=button],[role=radio],[role=checkbox],[role=tab],[role=menuitem],[tabindex="0"],.a-button')) found.push(el);
+        if (el.matches('input,select,textarea,[contenteditable=true],button,a,label,[role=button],[role=radio],[role=checkbox],[role=tab],[role=menuitem],[tabindex="0"],.a-button')) found.push(el);
         if (el.shadowRoot) walk(el.shadowRoot);
       }
     };
@@ -57,6 +57,7 @@
     if(el.matches('textarea,select,[contenteditable=true],input:not([type]),input[type=text],input[type=number],input[type=search]')) {
       if(['details','content','series','cover_creator','pricing','rights-and-pricing'].includes(p.stage)) return 'fill';
     }
+    if(el.matches('label') && p.stage==='details' && /^I own the copyright and I hold the necessary publishing rights\.?/i.test(name) && (el.control?.type==='radio'||el.querySelector('input[type=radio]')||el.closest('.a-radio'))) return 'click';
     if(el.matches('input[type=radio],input[type=checkbox],[role=radio],[role=checkbox]')) {
       if(['details','content','pricing','rights-and-pricing','cover_creator'].includes(p.stage)) return 'click';
     }
