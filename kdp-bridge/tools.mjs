@@ -40,7 +40,7 @@ export function createMcp(browser) {
   },false,a=>a.action==='begin'?browser.prepareTransfer(a):
     (a.action==='append' && a.index===0 && a.data_base64?.startsWith('oaisignedurl1:'))?
       browser.pullTransfer(a):browser.call('receive_file',a));
-  register('upload_file','Upload an edition-bound PDF received directly through kdp_receive_file, using a freshly inspected exact KDP file input. Verify Amazon processing separately; dispatch alone is not acceptance.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
+  register('upload_file','Upload an edition-bound PDF, EPUB or Kindle cover image received through kdp_receive_file, using a freshly inspected exact KDP file input. Verify Amazon processing separately; dispatch alone is not acceptance.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_staged_file','Send selected local artifact to a matching Content file input. Check Amazon processing separately.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_status','Inspect browser upload transfer records and Amazon processing notices for the exact edition; do not infer acceptance from a dispatched upload.',{...page,edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text},true,a=>browser.call('upload_status',a));
   register('publish_approved','Only after explicit chat approval for the exact edition, price, rights and warnings, request one final click. The user must confirm in Brave. Verify actual Bookshelf status.',{...control,title:text,edition:text,edition_id:text,price:text,rights:text,warnings:z.array(text).max(40),chat_approved:z.literal(true)},false,a=>browser.call('publish',a));
