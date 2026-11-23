@@ -28,7 +28,7 @@ export function createMcp(browser) {
   register('capture','Capture the visible approved preview or Cover Creator tab. Report the visible pages and uninspected ranges.',page,true,a=>browser.call('capture',a));
   register('list_staged_files','List edition-bound files selected locally in Brave.',{},true,()=>browser.call('staged',{}));
   register('stage_file','Stage an existing PDF from the Mac owner-approved Desktop or Downloads folder via the installed read-only native helper. Check the returned SHA-256 before upload.',{tab_id:z.number().int().nonnegative(),edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text,path:z.string().min(1).max(1024),kind:z.enum(['manuscript','cover'])},false,a=>browser.call('stage_file',a));
-  register('receive_file','Receive a PDF directly from ChatGPT as bounded SHA-256-verified base64 chunks, scoped to an existing KDP edition. No Mac staging required. Begin: tab, edition, edition_id, kind, filename, byte size and sha256. Append: transfer_id, sequential index, base64. Commit after all bytes; then use kdp_upload_file.',{
+  register('receive_file','Receive a PDF, EPUB, DOCX or Kindle cover image directly from ChatGPT as bounded SHA-256-verified chunks, scoped to a saved KDP edition. No Mac staging required. Begin: tab, edition, edition_id, kind, filename, byte size and sha256. Append: transfer_id, sequential index, base64. Commit after all bytes; then use kdp_upload_file.',{
     action:z.enum(['begin','append','commit','abort']),
     tab_id:z.number().int().nonnegative().optional(),edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']).optional(),
     edition_id:text.optional(),expected_path:z.string().max(500).optional(),document_id:z.string().max(100).optional(),
