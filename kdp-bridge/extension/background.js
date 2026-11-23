@@ -209,9 +209,16 @@ async function receiveRemote(a) {
     if(t.received!==t.size) throw Error('Incomplete PDF receipt');
     // Remove the uncommitted transfer even if hash validation fails.
     remoteTransfers.delete(a.transfer_id);
-    const file=new File(t.parts,t.name,{type:'application/pdf'});
-    const header=new Uint8Array(await file.slice(0,5).arrayBuffer());
-    if(String.fromCharCode(...header)!=='%PDF-') throw Error('Invalid PDF header');
+    const ext=t.name.split('.').pop().toLowerCase();
+    const mime={pdf:'application/pdf',epub:'application/epub+zip',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',kpf:'application/octet-stream',jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png'}[ext];
+    if(!mime) throw Error('Unsupported received file type');
+    const file=new File(t.parts,t.name,{type:mime});
+    const h=new Uint8Array(await file.slice(0,8).arrayBuffer());
+    const signature = (v)=>v.every((byte,i)=>h[i]===byte);
+    if(ext==='pdf'&&!signature([37,80,68,70,45])) throw Error('Invalid PDF header');
+    if(['epub','docx'].includes(ext)&&!signature([80,75,3,4])) throw Error('Invalid EPUB/DOCX ZIP header');
+    if(['jpg','jpeg'].includes(ext)&&!signature([255,216,255])) throw Error('Invalid JPEG header');
+    if(ext==='png'&&!signature([137,80,78,71,13,10,26,10])) throw Error('Invalid PNG header');
     const digest=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());
     const hash=Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('');
     if(hash!==t.sha256) throw Error('PDF SHA-256 mismatch');
