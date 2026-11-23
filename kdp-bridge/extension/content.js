@@ -99,7 +99,11 @@
       observed_at:new Date().toISOString(),stage:p.stage};
   }
   function protectMutation(el,p,op) {
-    if (p.edition_id==='new') throw Error('A saved edition is required. Inspect the existing edition.');
+    // Initial Kindle title setup is an ordinary metadata save, not publication.
+    // Only the Details stage may mutate an unsaved edition; Content and Pricing
+    // still require KDP to issue an actual edition identifier first.
+    if (p.edition_id==='new' && p.stage!=='details')
+      throw Error('Save the Kindle eBook Details first, then inspect the created edition.');
 
     const state=contentState(p);
     if (state.saving || state.unsaved_changes) throw Error('KDP is saving or has unsaved changes; inspect and resolve before changing content');
