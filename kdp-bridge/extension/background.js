@@ -1,9 +1,9 @@
 import {route,openable,bridgeOrigin,isPdfPath,classifyUpload,contentBlockers} from './policy.js';
-import {getFile,listFiles,stage} from './files.js';
+import {getFile,listFiles,stage,transferState,discardTransfer,beginTransfer,appendTransfer,transferParts} from './files.js';
 import {validateRemoteManifest,decodeRemoteChunk,REMOTE_CHUNK_BYTES,STREAM_CHUNK_BYTES,REMOTE_TTL_MS} from './remote-policy.js';
 let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
 const uploads=new Map();
-const remoteTransfers=new Map();
+
 const popup=chrome.runtime.getURL('popup.html');
 const config=async()=> (await chrome.storage.local.get('pairing')).pairing;
 const ready=chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});
@@ -59,7 +59,13 @@ function stop() {
   old?.close();
 }
 chrome.alarms.onAlarm.addListener(a=>{if(['kdp-reconnect','kdp-reconnect-fast'].includes(a.name)) void connect().catch(()=>{});});
+async function purgeExpiredTransfer() {
+  const transfer=await transferState();
+  if(transfer && Date.now()>transfer.expires) await discardTransfer(transfer.id);
+}
+chrome.alarms.onAlarm.addListener(a=>{if(a.name==='kdp-reconnect') void purgeExpiredTransfer().catch(()=>{});});
 async function wake() {
+  await purgeExpiredTransfer();
   if (!await chrome.alarms.get('kdp-reconnect')) await chrome.alarms.create('kdp-reconnect',{periodInMinutes:1});
   await connect();
 }
@@ -176,48 +182,45 @@ async function receiveRemote(a) {
       throw Error('KDP has unsaved changes or is saving');
     if (a.kind==='cover' && inspected.result.content_state?.cover_status!=='missing')
       throw Error('Cover is already present or cannot be verified; replacement is blocked');
-    for(const [id,t] of remoteTransfers) if(Date.now()>t.expires) remoteTransfers.delete(id);
-    if(remoteTransfers.size) throw Error('Finish or abort the existing PDF transfer first');
-    const transfer_id=crypto.randomUUID();
-    remoteTransfers.set(transfer_id,{
+    const partial=await beginTransfer({
+      id:crypto.randomUUID(),
       tab_id:a.tab_id,edition:a.edition,edition_id:a.edition_id,
       kind:a.kind,name:a.name,size:a.size,sha256:a.sha256.toLowerCase(),
-      expected_path:page.path,received:0,next_index:0,parts:[],
+      expected_path:page.path,received:0,next_index:0,
       expires:Date.now()+REMOTE_TTL_MS
     });
-    return {transfer_id,chunk_bytes:REMOTE_CHUNK_BYTES,stream_chunk_bytes:STREAM_CHUNK_BYTES,received:0,status:'receiving_in_brave'};
+    return {transfer_id:partial.id,next_index:partial.next_index,chunk_bytes:REMOTE_CHUNK_BYTES,stream_chunk_bytes:STREAM_CHUNK_BYTES,received:partial.received,status:'receiving_in_brave'};
   }
-  const t=remoteTransfers.get(a.transfer_id);
-  if (!t) throw Error('PDF transfer not found, expired or already completed');
+  const t=await transferState();
+  if (!t || t.id!==a.transfer_id) throw Error('PDF transfer not found, expired or already completed');
   if (a.action==='abort') {
-    remoteTransfers.delete(a.transfer_id);
+    await discardTransfer(a.transfer_id);
     return {aborted:true};
   }
   if (Date.now()>t.expires) {
-    remoteTransfers.delete(a.transfer_id);
+    await discardTransfer(a.transfer_id);
     throw Error('PDF transfer expired');
   }
   const {page}=await context(t.tab_id);
   if(page.stage!=='content' || page.edition!==t.edition ||
      page.edition_id!==t.edition_id || page.path!==t.expected_path) {
-    remoteTransfers.delete(a.transfer_id);
+    await discardTransfer(a.transfer_id);
     throw Error('KDP Content page changed during PDF receipt');
   }
   if (a.action==='append') {
     if(a.index!==t.next_index) throw Error('Out-of-order or repeated PDF chunk');
     const bytes=decodeRemoteChunk(a.data_base64,STREAM_CHUNK_BYTES);
     if(t.received+bytes.length>t.size) throw Error('PDF exceeds declared size');
-    t.parts.push(bytes); t.received+=bytes.length; t.next_index++;
-    return {transfer_id:a.transfer_id,received:t.received,total:t.size,next_index:t.next_index};
+    const saved=await appendTransfer(t.id,a.index,bytes);
+    return {transfer_id:a.transfer_id,received:saved.received,total:saved.size,next_index:saved.next_index};
   }
   if(a.action==='commit') {
     if(t.received!==t.size) throw Error('Incomplete PDF receipt');
-    // Remove the uncommitted transfer even if hash validation fails.
-    remoteTransfers.delete(a.transfer_id);
+    const parts=await transferParts(t.id);
     const ext=t.name.split('.').pop().toLowerCase();
     const mime={pdf:'application/pdf',epub:'application/epub+zip',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',kpf:'application/octet-stream',jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png'}[ext];
     if(!mime) throw Error('Unsupported received file type');
-    const file=new File(t.parts,t.name,{type:mime});
+    const file=new File(parts,t.name,{type:mime});
     const h=new Uint8Array(await file.slice(0,8).arrayBuffer());
     const signature = (v)=>v.every((byte,i)=>h[i]===byte);
     if(ext==='pdf'&&!signature([37,80,68,70,45])) throw Error('Invalid PDF header');
@@ -226,11 +229,16 @@ async function receiveRemote(a) {
     if(ext==='png'&&!signature([137,80,78,71,13,10,26,10])) throw Error('Invalid PNG header');
     const digest=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());
     const hash=Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('');
-    if(hash!==t.sha256) throw Error('PDF SHA-256 mismatch');
+    if(hash!==t.sha256) {
+      await discardTransfer(t.id);
+      throw Error('File SHA-256 mismatch');
+    }
     const inspected=await inPage({tab_id:t.tab_id},'inspect');
     if(t.kind==='cover' && inspected.result.content_state?.cover_status!=='missing')
       throw Error('Cover appeared during transfer; cannot replace it');
-    const file_id=await stage(file,page,t.kind);
+    const prior=await getFile(t.id);
+    const file_id=prior?.sha256===hash ? prior.id : await stage(file,page,t.kind,t.id);
+    await discardTransfer(t.id);
     return {file_id,filename:t.name,sha256:hash,size:t.size,
       edition:t.edition,edition_id:t.edition_id,kind:t.kind,
       status:'staged_in_brave_not_uploaded'};

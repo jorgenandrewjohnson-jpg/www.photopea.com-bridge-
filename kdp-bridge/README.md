@@ -1,5 +1,11 @@
 # Brave KDP publishing bridge
 
+## Version 0.3.6
+
+Brave checkpoints each acknowledged chunk and its next offset together in IndexedDB. After an interruption, begin the same transfer on the same saved edition and Content tab. Use the returned byte count and next index for chunked MCP delivery. A private HTTPS exporter can send the complete original file to the fresh one-use receipt. The bridge skips already stored bytes and verifies the full stream SHA-256. Partial transfers expire after 20 minutes. Check staged files after an uncertain commit and inspect Amazon before retrying an upload.
+
+The existing native helper accepts PDFs directly in `~/Library/Application Support/KDP Brave Bridge/Publishing`. The edition-specific `kdp_stage_attachment` tool also accepts an authorized ChatGPT file reference. It streams the attachment into a private temporary file and checks the receipt from Brave. Separate Amazon inspection is required after upload.
+
 ## Version 0.3.4: connection diagnostics and macOS privacy errors
 
 The live bridge now exposes `last_paired_at` and `last_disconnect` in `kdp_bridge_status`, recording only timestamp, WebSocket code and a short sanitized reason, not pairing secrets. The server pings the paired socket periodically to preserve connectivity and identify stale connections; Brave schedules an early reconnect alarm after unexpected closure, retaining the existing periodic fallback. Expired incomplete remote transfer sessions are pruned when a new transfer begins.

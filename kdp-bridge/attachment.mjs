@@ -25,7 +25,7 @@ export function createAttachmentReceiver(browser,fetchFile=fetch) {
     validateRemoteManifest({...manifest,size:1,sha256:'0'.repeat(64)},page);
     if (busy) throw Error('Another attachment is in progress');
     busy=true;
-    let directory,handle,transfer;
+    let directory,handle;
     try {
       directory=await mkdtemp(join(tmpdir(),'kdp-attachment-'));
       const path=join(directory,'incoming');
@@ -48,11 +48,11 @@ export function createAttachmentReceiver(browser,fetchFile=fetch) {
       if (!size || (declared!==null && Number(declared)!==size)) throw Error('Incomplete attachment');
       const sha256=digest.digest('hex');
       const ticket=await browser.call('receive_file',{action:'begin',...manifest,size,sha256});
-      transfer=ticket.transfer_id;
+      const transfer=ticket.transfer_id;
       const chunk=ticket.stream_chunk_bytes===STREAM_CHUNK_BYTES?STREAM_CHUNK_BYTES:REMOTE_CHUNK_BYTES;
       const block=Buffer.alloc(chunk);
-      let index=0;
-      for(let offset=0;offset<size;) {
+      let index=ticket.next_index || 0;
+      for(let offset=ticket.received || 0;offset<size;) {
         const {bytesRead}=await handle.read(block,0,Math.min(chunk,size-offset),offset);
         if (!bytesRead) throw Error('Temporary attachment incomplete');
         await browser.call('receive_file',{action:'append',transfer_id:transfer,index:index++,
@@ -60,14 +60,13 @@ export function createAttachmentReceiver(browser,fetchFile=fetch) {
         offset+=bytesRead;
       }
       const receipt=await browser.call('receive_file',{action:'commit',transfer_id:transfer});
-      transfer=null;
       if(receipt.sha256!==sha256 || receipt.size!==size || receipt.edition_id!==edition_id ||
          receipt.edition!==edition || receipt.kind!==kind || receipt.filename!==manifest.name || !receipt.file_id)
         throw Error('Staging receipt mismatch. Inspect staged files before retrying');
       return receipt;
     } finally {
       try {
-        if(transfer) await browser.call('receive_file',{action:'abort',transfer_id:transfer}).catch(()=>{});
+        // The edition-bound partial remains resumable until Brave expires it.
         await handle?.close();
         if(directory) await rm(directory,{recursive:true,force:true});
       } finally { busy=false; }

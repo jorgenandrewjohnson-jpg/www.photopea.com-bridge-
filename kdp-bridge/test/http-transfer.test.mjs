@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {Readable} from 'node:stream';
 import {createTransferIngress} from '../http-transfer.mjs';
 
@@ -25,7 +26,7 @@ test('private PDF stream is routed through bounded browser chunks and committed 
       return {received:true};
     }
   });
-  const ticket=await service.prepare({...begin,size:buffer.length});
+  const ticket=await service.prepare({...begin,size:buffer.length,sha256:createHash('sha256').update(buffer).digest('hex')});
   assert.match(ticket.upload_url,/^https:\/\/private\.example\/file-transfer\//);
   assert.ok(ticket.upload_token.length>30);
   const request=Readable.from([buffer.subarray(0,13000),buffer.subarray(13000)]);
@@ -59,4 +60,30 @@ test('invalid or missing transfer token cannot submit a PDF',async()=>{
   const res=response();
   await s.handle(req,res,new URL(t.upload_url));
   assert.equal(res.status,401);assert.equal(appended,false);
+});
+
+test('an interrupted stream resumes from the last browser acknowledgement after ingress restart',async()=>{
+  const bytes=Buffer.alloc(73000,65);bytes.write('%PDF-1.7');
+  const list=[];
+  const manifest={...begin,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
+  let simulateDrop=true;
+  const restart=()=>createTransferIngress({origin:'https://private.example',dispatch:async(_,a)=>{
+    if(a.action==='begin')return {transfer_id:'stub',next_index:list.length,received:list.reduce((n,b)=>n+b.length,0)};
+    if(a.action==='append'){
+      if(a.index===1 && simulateDrop) {simulateDrop=false;throw Error('simulated network drop');}
+      assert.equal(a.index,list.length);
+      list.push(Buffer.from(a.data_base64,'base64'));return {};
+    }
+    assert.equal(a.action,'commit');return {file_id:'verified'};
+  }});
+  for(const expected of [422,200]) {
+    const server=restart();
+    const ticket=await server.prepare(manifest);
+    const req=Readable.from([bytes]); req.method='POST';
+    req.headers={'x-kdp-transfer-token':ticket.upload_token,'content-type':'application/pdf'};
+    const res=response();
+    await server.handle(req,res,new URL(ticket.upload_url));
+    assert.equal(res.status,expected);
+  }
+  assert.deepEqual(Buffer.concat(list),bytes);
 });

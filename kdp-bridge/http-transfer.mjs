@@ -1,7 +1,7 @@
 // One-use, owner-authorized PDF ingress for a client that already possesses
 // approved export bytes. No remote fetching, public URLs or persistent files.
 // The PDF is streamed to the paired Brave extension in bounded chunks.
-import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
+import {randomUUID,randomBytes,timingSafeEqual,createHash} from 'node:crypto';
 
 const LEGACY_CHUNK = 24 * 1024;
 const mediaTypes = {pdf:'application/pdf', epub:'application/epub+zip',
@@ -21,17 +21,45 @@ export function createTransferIngress({origin,dispatch}) {
     if(a.action!=='begin' || !Number.isSafeInteger(a.size) ||
        a.size<=0 || a.size>LIMIT) throw Error('A valid begin transfer is required');
     for(const [id,session] of sessions) if(Date.now()>session.expires) sessions.delete(id);
-    if(sessions.size>=3) throw Error('Too many unfinished PDF transfers');
     const result=await dispatch('receive_file',a);
+    for(const [oldId,item] of sessions) if(item.transfer_id===result.transfer_id) sessions.delete(oldId);
+    if(sessions.size>=3) throw Error('Too many unfinished transfers');
     const id=randomUUID(),token=randomBytes(32).toString('base64url');
     const mime=mediaTypes[a.name.split('.').pop().toLowerCase()];
     const chunk=result.stream_chunk_bytes===512*1024?result.stream_chunk_bytes:LEGACY_CHUNK;
-    sessions.set(id,{token,transfer_id:result.transfer_id,size:a.size,mime,chunk,
+    sessions.set(id,{token,transfer_id:result.transfer_id,size:a.size,sha256:a.sha256.toLowerCase(),mime,chunk,
+      offset:result.received || 0,index:result.next_index || 0,
       edition:a.edition,edition_id:a.edition_id,kind:a.kind,expires:Date.now()+TTL});
     return {...result,
       upload_url:origin+'/file-transfer/'+id,
       header_name:'X-KDP-Transfer-Token',upload_token:token,
       method:'POST',content_type:mime,expires_in_seconds:Math.floor(TTL/1000)};
+  }
+  async function deliver(stream,session) {
+    const digest=createHash('sha256');
+    let total=0,index=session.index,carry=Buffer.alloc(0);
+    const append=bytes=>dispatch('receive_file',{action:'append',transfer_id:session.transfer_id,
+      index:index++,data_base64:bytes.toString('base64')});
+    for await(const raw of stream) {
+      const bytes=Buffer.from(raw);
+      digest.update(bytes);
+      const skip=Math.max(0,session.offset-total);
+      total+=bytes.length;
+      if(total>session.size) throw Error('File exceeds approved size');
+      if(skip>=bytes.length) continue;
+      carry=Buffer.concat([carry,bytes.subarray(skip)]);
+      while(carry.length>=session.chunk) {
+        await append(carry.subarray(0,session.chunk));
+        carry=carry.subarray(session.chunk);
+      }
+    }
+    if(total!==session.size) throw Error('Incomplete file. Begin the same transfer to resume.');
+    if(digest.digest('hex')!==session.sha256) {
+      await dispatch('receive_file',{action:'abort',transfer_id:session.transfer_id});
+      throw Error('Source SHA-256 does not match the manifest');
+    }
+    if(carry.length) await append(carry);
+    return dispatch('receive_file',{action:'commit',transfer_id:session.transfer_id});
   }
   async function handle(req,res,url) {
     const id=url.pathname.slice('/file-transfer/'.length);
@@ -43,8 +71,6 @@ export function createTransferIngress({origin,dispatch}) {
     }
     // Single-use: an uncertain partially received PDF must never be replayed.
     sessions.delete(id);
-    const CHUNK=session.chunk;
-    let index=0,total=0,carry=Buffer.alloc(0);
     const errorReply=()=>{
       if(!res.headersSent){
         res.writeHead(422,{'Content-Type':'application/json','Cache-Control':'no-store'});
@@ -61,32 +87,10 @@ export function createTransferIngress({origin,dispatch}) {
       const length=req.headers['content-length'];
       if(length && Number(length)!==session.size)
         throw Error('Incorrect Content-Length');
-      for await (const chunk of req) {
-        if(total+chunk.length>session.size) throw Error('Oversized PDF stream');
-        total+=chunk.length;
-        carry=Buffer.concat([carry,chunk]);
-        while(carry.length>=CHUNK){
-          await dispatch('receive_file',{
-            action:'append',transfer_id:session.transfer_id,index:index++,
-            data_base64:carry.subarray(0,CHUNK).toString('base64')
-          });
-          carry=carry.subarray(CHUNK);
-        }
-      }
-      if(total!==session.size) throw Error('Incomplete PDF');
-      if(carry.length) await dispatch('receive_file',{
-        action:'append',transfer_id:session.transfer_id,index:index++,
-        data_base64:carry.toString('base64')
-      });
-      const result=await dispatch('receive_file',{
-        action:'commit',transfer_id:session.transfer_id
-      });
+      const result=await deliver(req,session);
       res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});
       res.end(JSON.stringify({status:'staged_in_brave_not_uploaded',...result}));
     } catch {
-      await dispatch('receive_file',{
-        action:'abort',transfer_id:session.transfer_id
-      }).catch(()=>{});
       errorReply();
     }
   }
@@ -102,7 +106,6 @@ export function createTransferIngress({origin,dispatch}) {
     if(!match || Date.now()>match[1].expires)
       throw Error('PDF receipt has expired or was not prepared');
     const [sessionId,session]=match;
-    const CHUNK=session.chunk;
     const text=a.data_base64.slice('oaisignedurl1:'.length);
     if(text.length<50 || text.length>2400)
       throw Error('Invalid signed source length');
@@ -119,7 +122,6 @@ export function createTransferIngress({origin,dispatch}) {
     sessions.delete(sessionId); // One use, including on failure.
     const aborter=new AbortController();
     const timer=setTimeout(()=>aborter.abort(),180000);
-    let index=0,total=0,carry=Buffer.alloc(0);
     try {
       const response=await fetch(url,{redirect:'error',signal:aborter.signal,cache:'no-store'});
       if(!response.ok || !response.body)
@@ -127,32 +129,9 @@ export function createTransferIngress({origin,dispatch}) {
       const declared=response.headers.get('content-length');
       if(declared && Number(declared)!==session.size)
         throw Error('Source byte length does not match the approved PDF');
-      for await(const chunk of response.body) {
-        if(total+chunk.length>session.size)
-          throw Error('Source PDF exceeds approved size');
-        total+=chunk.length;
-        carry=Buffer.concat([carry,Buffer.from(chunk)]);
-        while(carry.length>=CHUNK) {
-          await dispatch('receive_file',{
-            action:'append',transfer_id:session.transfer_id,
-            index:index++,data_base64:carry.subarray(0,CHUNK).toString('base64')
-          });
-          carry=carry.subarray(CHUNK);
-        }
-      }
-      if(total!==session.size) throw Error('Source PDF was incomplete');
-      if(carry.length) await dispatch('receive_file',{
-        action:'append',transfer_id:session.transfer_id,
-        index:index++,data_base64:carry.toString('base64')
-      });
-      const result=await dispatch('receive_file',{
-        action:'commit',transfer_id:session.transfer_id
-      });
+      const result=await deliver(response.body,session);
       return {status:'staged_in_brave_not_uploaded',...result};
     } catch(error) {
-      await dispatch('receive_file',{
-        action:'abort',transfer_id:session.transfer_id
-      }).catch(()=>{});
       throw Error('Signed PDF import failed: '+String(error.message||error).slice(0,140));
     } finally {clearTimeout(timer);}
   }
