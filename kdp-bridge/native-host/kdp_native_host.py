@@ -57,7 +57,7 @@ def open_pdf(value):
 def handle(a):
     action = a.get('action')
     if action == 'health':
-        return {'ok': True, 'version': '0.3.6'}
+        return {'ok': True, 'version': '0.3.7'}
     if action not in ('stat', 'read'):
         raise ValueError('Unsupported command')
     with open_pdf(a.get('path')) as (path, stream, info):

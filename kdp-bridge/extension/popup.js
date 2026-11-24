@@ -13,6 +13,8 @@ async function refresh() {
   el('status').textContent=s.paired?'Paired with '+s.origin:s.challenge?'Pairing code: '+s.challenge+'\nAuthorize this code on your KDP bridge within three minutes.':s.lastError || 'Disconnected';
   pending=s.publication;
   el('publication').hidden=!pending;
+  el('confirm').disabled=el('deny').disabled=pending?.status==='dispatching';
+  if(!pending && s.lastPublication) el('status').textContent+='\nLast publication: '+s.lastPublication.status;
   if(pending) el('review').textContent=[pending.title,pending.edition+' '+pending.edition_id,'Price: '+pending.price,'Rights: '+pending.rights,'Warnings: '+(pending.warnings.join('\n')||'None reported'),pending.button,'Expires '+new Date(pending.expires).toLocaleTimeString()].join('\n');
 }
 function action(id,fn) {el(id).onclick=async()=>{try{await fn();await refresh();}catch(e){el('status').textContent=e.message;}};}

@@ -18,13 +18,13 @@ done
 for file in kdp_native_host.py install-mac.sh; do
   curl -fsSL --retry 3 "$RAW/native-host/$file" -o "$TMP/native-host/$file"
 done
-grep -q '"version": "0.3.6"' "$TMP/extension/manifest.json" || { echo 'Unexpected extension version' >&2; exit 1; }
+grep -q '"version": "0.3.7"' "$TMP/extension/manifest.json" || { echo 'Unexpected extension version' >&2; exit 1; }
 if command -v node >/dev/null 2>&1; then
   for file in background.js content.js files.js policy.js remote-policy.js popup.js; do
     node --check "$TMP/extension/$file"
   done
 fi
-BACKUP="$(mktemp -d "$HOME/Library/Application Support/KDP Brave Bridge/backup-before-v0.3.6.XXXXXXXX")"
+BACKUP="$(mktemp -d "$HOME/Library/Application Support/KDP Brave Bridge/backup-before-v0.3.7.XXXXXXXX")"
 for file in background.js content.js files.js manifest.json policy.js remote-policy.js popup.js popup.html; do
   [ -f "$DEST/$file" ] && cp "$DEST/$file" "$BACKUP/$file"
   cp "$TMP/extension/$file" "$DEST/$file"

@@ -1,7 +1,7 @@
 import {route,openable,bridgeOrigin,isPdfPath,classifyUpload,contentBlockers} from './policy.js';
 import {getFile,listFiles,stage,transferState,discardTransfer,beginTransfer,appendTransfer,transferParts} from './files.js';
 import {validateRemoteManifest,decodeRemoteChunk,REMOTE_CHUNK_BYTES,STREAM_CHUNK_BYTES,REMOTE_TTL_MS} from './remote-policy.js';
-let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
+let socket, heartbeat, paired=false, challenge='', pendingPublish, lastPublication, lastError='';
 const uploads=new Map();
 
 const popup=chrome.runtime.getURL('popup.html');
@@ -55,7 +55,7 @@ async function connect() {
 function stop() {
   const old=socket; socket=null; paired=false; challenge='';
   clearInterval(heartbeat);
-  if (pendingPublish) pendingPublish.decide(false);
+  if (pendingPublish && !pendingPublish.dispatching) finishPublication(pendingPublish,'disconnected');
   old?.close();
 }
 chrome.alarms.onAlarm.addListener(a=>{if(['kdp-reconnect','kdp-reconnect-fast'].includes(a.name)) void connect().catch(()=>{});});
@@ -270,21 +270,75 @@ async function upload(a) {
   } catch(e) {progress.status='failed_or_uncertain';progress.error=e.message;throw e;}
   finally {await inPage(a,'upload_cancel',{id}).catch(()=>{});}
 }
+// Return the review request immediately; owner confirmation is a separate local
+// action. Never infer Amazon acceptance from a click or repeat an uncertain click.
+function publicationSnapshot(p) {
+  if (!p) return {status:'no_request_observed'};
+  const {title,edition,edition_id,price,rights,warnings,tab_id}=p.args;
+  return {request_id:p.request_id, title,edition,edition_id,price,rights,warnings,tab_id,
+    button:p.button,expires:p.expires,status:p.status,
+    ...(p.error?{error:p.error}:{}), ...(p.popup_opened!==undefined?{popup_opened:p.popup_opened}:{})};
+}
+function finishPublication(p,status,error) {
+  if(pendingPublish!==p) return;
+  clearTimeout(p.timer);
+  p.status=status;p.error=error;
+  lastPublication=publicationSnapshot(p);
+  pendingPublish=null;
+  void chrome.action.setBadgeText({text:''}).catch(()=>{});
+}
 async function publish(a) {
-  if(pendingPublish) throw Error('Another publication request is pending');
+  if(pendingPublish) throw Error('A publication review is already pending; inspect publication status');
+  if(lastPublication?.edition_id===a.edition_id && lastPublication?.edition===a.edition &&
+     ['submitted_unverified','outcome_unknown'].includes(lastPublication.status))
+    throw Error('Previous publication outcome is uncertain. Verify Amazon Bookshelf before any retry.');
   const review=await inPage(a,'review_publish');
-  const expires=Date.now()+90000, request_id=crypto.randomUUID();
-  let decide;
-  const decision=new Promise(resolve=>{decide=resolve;});
-  pendingPublish={args:a,button:review.result.button,request_id,expires,decide};
-  const timer=setTimeout(()=>decide(false),90000);
-  await chrome.action.setBadgeText({text:'ASK'});
+  if(!paired) throw Error('Bridge disconnected before review');
+  const expires=Date.now()+5*60*1000, request_id=crypto.randomUUID();
+  const p={args:a,button:review.result.button,request_id,expires,status:'awaiting_owner_confirmation',dispatching:false};
+  pendingPublish=p;
+  p.timer=setTimeout(()=>{if(!p.dispatching) finishPublication(p,'expired');},5*60*1000);
   try {
-    if (!await decision || Date.now()>expires || !paired) throw Error('Publication request expired or declined');
-    return await inPage(a,'publish');
-  } finally {clearTimeout(timer);pendingPublish=null;await chrome.action.setBadgeText({text:''});}
+    await chrome.action.setBadgeText({text:'ASK'});
+    const {t}=await context(a.tab_id);
+    await chrome.tabs.update(t.id,{active:true});
+    await chrome.windows.update(t.windowId,{focused:true});
+    if(chrome.action.openPopup) {
+      await chrome.action.openPopup({windowId:t.windowId});
+      p.popup_opened=true;
+    } else p.popup_opened=false;
+  } catch {p.popup_opened=false;}
+  return publicationSnapshot(p);
+}
+async function confirmPublication(m) {
+  const p=pendingPublish;
+  const [active]=await chrome.tabs.query({active:true,lastFocusedWindow:true});
+  if(!p || p.request_id!==m.request_id || p.dispatching || Date.now()>p.expires ||
+     !paired || active?.id!==p.args.tab_id)
+    throw Error('Activate the exact pricing tab with the current publication request');
+  if(m.approve!==true) {finishPublication(p,'declined');return {status:'declined'};}
+  p.dispatching=true;p.status='dispatching';
+  clearTimeout(p.timer);
+  try {
+    const result=await inPage(p.args,'publish');
+    finishPublication(p,'submitted_unverified');
+    return {status:'submitted_unverified',result};
+  } catch(e) {
+    finishPublication(p,'outcome_unknown',e.message);
+    throw e;
+  }
 }
 async function run(op,a) {
+  if(op==='publication_status') {
+    const observed=pendingPublish?publicationSnapshot(pendingPublish):lastPublication;
+    return observed?.edition_id===a.edition_id && observed?.edition===a.edition ? observed :
+      {edition_id:a.edition_id,edition:a.edition,status:'no_request_observed'};
+  }
+  // Inspection reinjects the scanner and invalidates its reviewed control IDs.
+  // Freeze bridge operations during local review; the page fingerprint still
+  // catches manual changes and navigation.
+  if(pendingPublish && !['tabs','staged'].includes(op))
+    throw Error('Owner publication review pending; confirm or decline in Brave before other operations');
   switch(op) {
     case 'tabs':return (await chrome.tabs.query({url:['https://kdp.amazon.com/*','https://cc.amazon.com/*']})).flatMap(t=>{const p=route(t.url);return p?[{tab_id:t.id,active:t.active,...p}]:[];});
     case 'staged':return listFiles();
@@ -322,7 +376,7 @@ chrome.runtime.onMessage.addListener((m,s,reply)=>{
     if (m.type==='status') {
       const c=await config();
       const p=pendingPublish;
-      return {origin:c?.origin,paired,challenge,lastError,publication:p?{...p.args,button:p.button,request_id:p.request_id,expires:p.expires}:null};
+      return {origin:c?.origin,paired,challenge,lastError,publication:p?publicationSnapshot(p):null,lastPublication};
     }
     if (m.type==='pair') {
       const origin=bridgeOrigin(m.origin);
@@ -331,10 +385,7 @@ chrome.runtime.onMessage.addListener((m,s,reply)=>{
     }
     if (m.type==='disconnect') {await chrome.storage.local.remove('pairing');stop();return {disconnected:true};}
     if (m.type==='confirm') {
-      const p=pendingPublish;
-      const [active]=await chrome.tabs.query({active:true,lastFocusedWindow:true});
-      if (!p || p.request_id!==m.request_id || Date.now()>p.expires || active?.id!==p.args.tab_id) throw Error('Activate the exact pricing tab with the current publication request');
-      p.decide(m.approve===true);return {received:true};
+      return confirmPublication(m);
     }
     throw Error('Unknown extension operation');
   })().then(reply).catch(e=>reply({error:e.message}));

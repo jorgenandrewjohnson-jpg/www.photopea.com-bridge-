@@ -7,7 +7,7 @@ const tab = {tab_id:z.number().int().nonnegative()};
 const page = {...tab, document_id:z.string().min(1).max(100), expected_path:z.string().max(500)};
 const control = {...page, control_id:z.string().uuid()};
 const text = z.string().trim().min(1).max(1000);
-export const VERSION = '0.3.6';
+export const VERSION = '0.3.7';
 export function createMcp(browser) {
   const server = new McpServer({name:'kdp-browser-bridge',version:VERSION});
   function register(name, description, inputSchema, readOnlyHint, handler, meta={}, outputSchema) {
@@ -76,6 +76,7 @@ export function createMcp(browser) {
   register('upload_file','Upload an edition-bound PDF, EPUB or Kindle cover image received through kdp_receive_file, using a freshly inspected exact KDP file input. Verify Amazon processing separately; dispatch alone is not acceptance.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_staged_file','Send selected local artifact to a matching Content file input. Check Amazon processing separately.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_status','Inspect browser upload transfer records and Amazon processing notices for the exact edition; do not infer acceptance from a dispatched upload.',{...page,edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text},true,a=>browser.call('upload_status',a));
-  register('publish_approved','Only after explicit chat approval for the exact edition, price, rights and warnings, request one final click. The user must confirm in Brave. Verify actual Bookshelf status.',{...control,title:text,edition:text,edition_id:text,price:text,rights:text,warnings:z.array(text).max(40),chat_approved:z.literal(true)},false,a=>browser.call('publish',a));
+  register('publication_status','Read the current owner confirmation or unverified submission outcome for the exact edition. This never publishes.',{edition:text,edition_id:text},true,a=>browser.call('publication_status',a));
+  register('publish_approved','After explicit chat approval for the exact edition, price, rights and warnings, return a pending local confirmation immediately (new extension). The user must confirm in Brave. Verify actual Bookshelf status; never retry an uncertain submission.',{...control,title:text,edition:text,edition_id:text,price:text,rights:text,warnings:z.array(text).max(40),chat_approved:z.literal(true)},false,a=>browser.call('publish',a));
   return server;
 }
