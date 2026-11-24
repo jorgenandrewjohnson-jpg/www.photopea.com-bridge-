@@ -59,7 +59,7 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
       ...(job.error && { error: job.error }),
       ...(job.result !== undefined && { result: job.result }),
       ...(job.file && {
-        bytes: job.file.bytes, file_name: job.file.name,
+        bytes: job.file.bytes, sha256: job.file.sha256, file_name: job.file.name,
         download_url: origin + '/download/' + job.id, download_requires_bearer_token: true,
         expires_at: new Date(job.expires).toISOString()
       })
@@ -156,7 +156,7 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
       return;
     }
     storedBytes += bytes.length;
-    job.file = { basename, name: (name || 'photopea-cover') + '.' + format, bytes: bytes.length, format };
+    job.file = { basename, name: (name || 'photopea-cover') + '.' + format, bytes: bytes.length, format, sha256: createHash('sha256').update(bytes).digest('hex') };
     finish(job, 'completed');
   }
 
@@ -360,6 +360,36 @@ export async function createBridge(server, { origin, token, storage, maxFile, st
       const job = jobs.get(id);
       if (!job) throw new Error('Job expired or is unknown.');
       return view(job);
+    },
+    async stageCover({job_id, edition, edition_id, upload_url, upload_token}) {
+      const job = jobs.get(job_id);
+      if (!job?.file || job.status !== 'completed' || job.expires <= Date.now())
+        throw Error('Export expired or incomplete');
+      const file = job.file;
+      const url = new URL(upload_url);
+      if (url.origin !== 'https://kdp-browser-bridge.onrender.com' ||
+          url.username || url.password || url.search || url.hash ||
+          !/^\/file-transfer\/[a-f0-9-]{36}$/.test(url.pathname))
+        throw Error('Expected a private KDP Bridge transfer receipt');
+      if (edition === 'kindle-ebook' ? !['png','jpg'].includes(file.format) : file.format !== 'pdf')
+        throw Error('The cover format must match the destination edition');
+      const stream = createReadStream(join(storage, file.basename));
+      try {
+        const response = await fetch(url, {method:'POST', redirect:'error', duplex:'half',
+          signal:AbortSignal.timeout(20 * 60_000), body:stream,
+          headers:{'Content-Type':mime[file.format], 'Content-Length':String(file.bytes),
+            'X-KDP-Edition':edition, 'X-KDP-Edition-Id':edition_id, 'X-KDP-Kind':'cover',
+            'X-KDP-Transfer-Token':upload_token}});
+        if (!response.ok) throw Error('KDP Bridge declined the transfer (HTTP '+response.status+')');
+        const receipt = await response.json();
+        if (receipt.status !== 'staged_in_brave_not_uploaded' ||
+            !/^[a-f0-9-]{36}$/.test(receipt.file_id) || receipt.sha256 !== file.sha256 ||
+            receipt.filename !== file.name || receipt.size !== file.bytes ||
+            receipt.edition !== edition || receipt.edition_id !== edition_id || receipt.kind !== 'cover')
+          throw Error('KDP staging receipt does not match the approved cover');
+        return {status:receipt.status, file_id:receipt.file_id, sha256:file.sha256,
+          filename:file.name, size:file.bytes, edition, edition_id};
+      } finally { stream.destroy(); }
     },
     download(id, res) {
       const file = jobs.get(id)?.file;

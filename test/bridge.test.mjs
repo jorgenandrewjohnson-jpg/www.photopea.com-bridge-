@@ -33,7 +33,7 @@ const jpgBytes = Buffer.from([
 ].join(''), 'base64');
 const methods = [
   'bridge_status', 'job_status', 'photopea_add_text', 'photopea_export', 'photopea_manage_layers',
-  'photopea_open_document', 'photopea_place_image', 'photopea_run_script'
+  'photopea_open_document', 'photopea_place_image', 'photopea_run_script', 'photopea_stage_kdp_cover'
 ];
 let app, storage, origin, client;
 const headers = { Authorization: 'Bearer ' + token };
@@ -314,7 +314,7 @@ for (const native of [false, true]) {
     const credentials = await response.json();
     assert.equal((await exchange(codeExchange)).status, 400);
     const authenticated = await createClient('auto', credentials.access_token);
-    try { assert.equal((await authenticated.listTools()).tools.length, 8); }
+    try { assert.equal((await authenticated.listTools()).tools.length, 9); }
     finally { await authenticated.close(); }
     const refresh = { grant_type: 'refresh_token', refresh_token: credentials.refresh_token };
     assert.equal((await exchange(refresh)).status, 200);
@@ -364,6 +364,7 @@ test('mocked editor runs typed edits and scripts and returns valid download meta
       assert.equal(file.status, 200);
       assert.equal(file.headers.get('content-disposition'), 'attachment; filename="fixture.' + format + '"');
       const actual = Buffer.from(await file.arrayBuffer());
+      assert.equal(exported.sha256,createHash('sha256').update(actual).digest('hex'));
       if (bytes) assert.deepEqual(actual, bytes);
       else assert.deepEqual((await PDFDocument.load(actual)).getPage(0).getSize(), { width: 0.48, height: 0.72 });
     }

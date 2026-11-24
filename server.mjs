@@ -9,7 +9,7 @@ import { createBridge } from './bridge.mjs';
 import { createOAuth, matches, send, SCOPE } from './oauth.mjs';
 import { makeOperation } from './photopea.mjs';
 
-const version = '0.3.1';
+const version = '0.3.2';
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const name = z.string().trim().min(1).max(200);
 const fileName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/).optional();
@@ -71,14 +71,20 @@ function toolsFor(bridge) {
       mcp.registerTool(name, {
         description, inputSchema, annotations,
         securitySchemes: [ownerScope], _meta: { securitySchemes: [ownerScope] }
-      }, args => {
-        try { return result(handler(args)); }
+      }, async args => {
+        try { return result(await handler(args)); }
         catch (error) { return result({ error: error.message }, true); }
       });
     };
     const readOnly = { readOnlyHint: true, openWorldHint: false };
     register('bridge_status', 'Report bridge health, browser pairing, editor responsiveness and command availability.', z.strictObject({}), bridge.status, readOnly);
     register('job_status', 'Get a job state, error, confirmed result or private export download URL.', z.strictObject({ job_id: z.uuid() }), a => bridge.job(a.job_id), readOnly);
+    register('photopea_stage_kdp_cover',
+      'Stream a completed private cover export directly to an existing KDP edition. Begin a matching KDP transfer first using the export name, bytes and SHA-256. Stages only.',
+      z.strictObject({job_id:z.uuid(), edition:z.enum(['hardcover','paperback','kindle-ebook']),
+        edition_id:z.string().regex(/^[A-Za-z0-9]+$/), upload_url:z.url(),
+        upload_token:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}),
+      args=>bridge.stageCover(args), {readOnlyHint:false, destructiveHint:false, openWorldHint:true});
     for (const [tool, description, schema] of operationTools) {
       register(tool, description, schema, ({ request_id, ...args }) => {
         return bridge.enqueue(tool, makeOperation(tool, args), request_id, args);

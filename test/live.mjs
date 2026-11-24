@@ -40,7 +40,7 @@ const { format } = new Intl.DateTimeFormat('en-CA', { timeStyle: 'medium', hourC
 const fixture = 'Bridge QA ' + format(new Date()).replaceAll(':', '-');
 const output = await mkdtemp(join(tmpdir(), 'photopea-live-'));
 try {
-  assert.equal((await client.listTools()).tools.length, 8);
+  assert.equal((await client.listTools()).tools.length, 9);
   assert.equal((await call('bridge_status')).photopea_ready, true, 'Pair a disposable Photopea workspace first.');
   const created = await run('photopea_open_document', { mode: 'new', name: fixture, width: 540, height: 400, dpi: 300 });
   assert.deepEqual(created.result, { name: fixture, width: 540, height: 400, dpi: 300 });
