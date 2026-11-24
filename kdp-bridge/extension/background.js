@@ -1,6 +1,6 @@
 import {route,openable,bridgeOrigin,isPdfPath,classifyUpload,contentBlockers} from './policy.js';
 import {getFile,listFiles,stage} from './files.js';
-import {validateRemoteManifest,decodeRemoteChunk,REMOTE_CHUNK_BYTES,REMOTE_TTL_MS} from './remote-policy.js';
+import {validateRemoteManifest,decodeRemoteChunk,REMOTE_CHUNK_BYTES,STREAM_CHUNK_BYTES,REMOTE_TTL_MS} from './remote-policy.js';
 let socket, heartbeat, paired=false, challenge='', pendingPublish, lastError='';
 const uploads=new Map();
 const remoteTransfers=new Map();
@@ -13,11 +13,13 @@ async function connect() {
   if (!c || (socket && socket.readyState<=1)) return;
   const ws=new WebSocket(bridgeOrigin(c.origin).replace(/^http/,'ws')+'/browser');
   socket=ws;
+  let lastServerMessage=Date.now();
   ws.onopen=()=>ws.send(JSON.stringify(c.device?{type:'pair',device:c.device,proof:c.proof}:{type:'enroll'}));
   ws.onmessage=async({data})=>{
     if (socket!==ws) return;
     try {
       const m=JSON.parse(data);
+      lastServerMessage=Date.now();
       if (m.type==='challenge') {challenge=m.code;return;}
       if (m.type==='credential') {
         if (!challenge || !(await config()) || socket!==ws) return;
@@ -27,7 +29,10 @@ async function connect() {
       }
       if (m.type==='paired') {
         paired=true; challenge=''; lastError='';
-        heartbeat=setInterval(()=>{if(ws.readyState===1)ws.send('{"type":"heartbeat"}');},20000);
+        heartbeat=setInterval(()=>{
+          if(Date.now()-lastServerMessage>70000) ws.close();
+          else if(ws.readyState===1) ws.send('{"type":"heartbeat"}');
+        },20000);
         return;
       }
       if (m.type!=='command' || !paired) return;
@@ -152,7 +157,7 @@ async function stageNative(a) {
     const file=new File(chunks,info.name,{type:'application/pdf'});
     const file_id=await stage(file,page,a.kind);
     const staged=(await listFiles()).find(x=>x.id===file_id);
-    return {...staged,staged:true};
+    return {...staged,file_id,staged:true};
   } finally {
     port?.disconnect();
   }
@@ -180,7 +185,7 @@ async function receiveRemote(a) {
       expected_path:page.path,received:0,next_index:0,parts:[],
       expires:Date.now()+REMOTE_TTL_MS
     });
-    return {transfer_id,chunk_bytes:REMOTE_CHUNK_BYTES,received:0,status:'receiving_in_brave'};
+    return {transfer_id,chunk_bytes:REMOTE_CHUNK_BYTES,stream_chunk_bytes:STREAM_CHUNK_BYTES,received:0,status:'receiving_in_brave'};
   }
   const t=remoteTransfers.get(a.transfer_id);
   if (!t) throw Error('PDF transfer not found, expired or already completed');
@@ -200,7 +205,7 @@ async function receiveRemote(a) {
   }
   if (a.action==='append') {
     if(a.index!==t.next_index) throw Error('Out-of-order or repeated PDF chunk');
-    const bytes=decodeRemoteChunk(a.data_base64);
+    const bytes=decodeRemoteChunk(a.data_base64,STREAM_CHUNK_BYTES);
     if(t.received+bytes.length>t.size) throw Error('PDF exceeds declared size');
     t.parts.push(bytes); t.received+=bytes.length; t.next_index++;
     return {transfer_id:a.transfer_id,received:t.received,total:t.size,next_index:t.next_index};

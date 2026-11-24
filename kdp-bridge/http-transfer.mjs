@@ -3,7 +3,10 @@
 // The PDF is streamed to the paired Brave extension in bounded chunks.
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
 
-const CHUNK = 24 * 1024;
+const LEGACY_CHUNK = 24 * 1024;
+const mediaTypes = {pdf:'application/pdf', epub:'application/epub+zip',
+  docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  kpf:'application/octet-stream', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png'};
 const TTL = 20 * 60 * 1000;
 const LIMIT = 250 * 1024 * 1024;
 
@@ -21,11 +24,14 @@ export function createTransferIngress({origin,dispatch}) {
     if(sessions.size>=3) throw Error('Too many unfinished PDF transfers');
     const result=await dispatch('receive_file',a);
     const id=randomUUID(),token=randomBytes(32).toString('base64url');
-    sessions.set(id,{token,transfer_id:result.transfer_id,size:a.size,expires:Date.now()+TTL});
+    const mime=mediaTypes[a.name.split('.').pop().toLowerCase()];
+    const chunk=result.stream_chunk_bytes===512*1024?result.stream_chunk_bytes:LEGACY_CHUNK;
+    sessions.set(id,{token,transfer_id:result.transfer_id,size:a.size,mime,chunk,
+      edition:a.edition,edition_id:a.edition_id,kind:a.kind,expires:Date.now()+TTL});
     return {...result,
       upload_url:origin+'/file-transfer/'+id,
       header_name:'X-KDP-Transfer-Token',upload_token:token,
-      method:'POST',content_type:'application/pdf',expires_in_seconds:Math.floor(TTL/1000)};
+      method:'POST',content_type:mime,expires_in_seconds:Math.floor(TTL/1000)};
   }
   async function handle(req,res,url) {
     const id=url.pathname.slice('/file-transfer/'.length);
@@ -37,6 +43,7 @@ export function createTransferIngress({origin,dispatch}) {
     }
     // Single-use: an uncertain partially received PDF must never be replayed.
     sessions.delete(id);
+    const CHUNK=session.chunk;
     let index=0,total=0,carry=Buffer.alloc(0);
     const errorReply=()=>{
       if(!res.headersSent){
@@ -45,8 +52,12 @@ export function createTransferIngress({origin,dispatch}) {
       }
     };
     try {
-      if(!/^application\/pdf(?:\s*;|$)/i.test(req.headers['content-type']||''))
-        throw Error('Content-Type must be application/pdf');
+      if (req.headers['content-type']?.split(';')[0].trim().toLowerCase()!==session.mime)
+        throw Error('Incorrect transfer content type');
+      for (const key of ['edition','edition_id','kind']) {
+        const expected=req.headers['x-kdp-'+key.replace('_','-')];
+        if (expected && expected!==session[key]) throw Error('Destination mismatch');
+      }
       const length=req.headers['content-length'];
       if(length && Number(length)!==session.size)
         throw Error('Incorrect Content-Length');
@@ -91,6 +102,7 @@ export function createTransferIngress({origin,dispatch}) {
     if(!match || Date.now()>match[1].expires)
       throw Error('PDF receipt has expired or was not prepared');
     const [sessionId,session]=match;
+    const CHUNK=session.chunk;
     const text=a.data_base64.slice('oaisignedurl1:'.length);
     if(text.length<50 || text.length>2400)
       throw Error('Invalid signed source length');

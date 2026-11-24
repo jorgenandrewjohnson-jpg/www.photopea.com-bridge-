@@ -1,6 +1,7 @@
 // Pure validation shared by the Brave worker and regression tests.
 // Files are only received over the authenticated MCP -> paired-Brave channel.
 export const REMOTE_CHUNK_BYTES = 24 * 1024;
+export const STREAM_CHUNK_BYTES = 512 * 1024;
 export const REMOTE_MAX_BYTES = 250 * 1024 * 1024;
 export const REMOTE_TTL_MS = 20 * 60 * 1000;
 
@@ -25,13 +26,13 @@ export function validateRemoteManifest(a, page) {
     throw Error('Provide the PDF SHA-256 before transfer');
   return true;
 }
-export function decodeRemoteChunk(value) {
+export function decodeRemoteChunk(value, limit=REMOTE_CHUNK_BYTES) {
   if (typeof value !== 'string' || !value.length ||
-      value.length > REMOTE_CHUNK_BYTES * 4 / 3 + 4 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value))
+      value.length > Math.ceil(limit / 3) * 4 || value.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(value))
     throw Error('Invalid base64 PDF chunk');
   const bytes = Uint8Array.from(atob(value), c => c.charCodeAt(0));
-  if (!bytes.length || bytes.length > REMOTE_CHUNK_BYTES)
+  if (!bytes.length || bytes.length > limit)
     throw Error('PDF chunk exceeds allowed size');
   return bytes;
 }

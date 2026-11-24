@@ -3,19 +3,22 @@
 
 Native messaging is explicitly installed by the Mac owner. It never writes, deletes,
 opens a browser, accesses credentials, or transfers any file except a PDF inside
-Desktop or Downloads. Every read is bounded and checks the file's mtime and size.
+an owner-authorized publishing folder. Every read is bounded and checks the file's mtime and size.
 """
 import base64
 import json
 import os
 from pathlib import Path
+import stat
+from contextlib import contextmanager
 import struct
 import sys
 
 MAX_FILE = 250 * 1024 * 1024
 CHUNK = 256 * 1024
-HOME = Path.home().resolve()
-ROOTS = tuple((HOME / name).resolve() for name in ('Desktop', 'Downloads'))
+HOME = Path.home().absolute()
+PUBLISHING = HOME / 'Library/Application Support/KDP Brave Bridge/Publishing'
+ROOTS = (HOME / 'Desktop', HOME / 'Downloads', PUBLISHING)
 
 
 def reply(data):
@@ -25,64 +28,55 @@ def reply(data):
     sys.stdout.buffer.flush()
 
 
-def location(value):
-    if not isinstance(value, str) or len(value) > 1024 or not value.startswith('/'):
-        raise ValueError('Expected an absolute path')
+@contextmanager
+def open_pdf(value):
+    if not isinstance(value, str) or len(value) > 1024:
+        raise ValueError('Expected an absolute PDF path')
     path = Path(value)
-    if path.suffix.lower() != '.pdf' or path.is_symlink():
-        raise ValueError('Only non-symlink PDF files are allowed')
+    if path.parent not in ROOTS or path.suffix.lower() != '.pdf':
+        raise ValueError('Select a PDF directly inside Publishing, Desktop or Downloads')
     try:
-        resolved = path.resolve(strict=True)
+        root_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=root_fd)
+        finally:
+            os.close(root_fd)
     except PermissionError as exc:
-        raise PermissionError(
-            'macOS blocked Desktop/Downloads access for the native Python helper. '
-            'This is a local Files & Folders privacy restriction, not a KDP error. '
-            'Allow access for Brave (and the Python executable if shown) in '
-            'System Settings > Privacy & Security > Files & Folders, or use '
-            'the private cloud PDF receiving workflow instead.'
-        ) from exc
-    if resolved.parent not in ROOTS or not resolved.is_file():
-        raise ValueError('The PDF must be directly on Desktop or in Downloads')
-    st = resolved.stat()
-    if st.st_size <= 0 or st.st_size > MAX_FILE:
-        raise ValueError('PDF is empty or exceeds the 250-MiB limit')
-    try:
-        with resolved.open('rb') as stream:
-            header = stream.read(5)
-    except PermissionError as exc:
-        raise PermissionError(
-            'macOS privacy settings denied the KDP helper permission to read this PDF. '
-            'Allow the native host process access to Desktop/Downloads in '
-            'System Settings > Privacy & Security > Files & Folders.'
-        ) from exc
-    if header != b'%PDF-':
-        raise ValueError('Selected file is not a valid PDF header')
-    return resolved, st
+        raise PermissionError('macOS denied access. Use the private Publishing folder, '
+                              'or allow Desktop/Downloads in Files & Folders.') from exc
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_FILE:
+            raise ValueError('Expected a regular PDF up to 250 MiB')
+        if stream.read(5) != b'%PDF-':
+            raise ValueError('Invalid PDF header')
+        yield path, stream, info
 
 
 def handle(a):
     action = a.get('action')
     if action == 'health':
-        return {'ok': True, 'version': '0.3.4'}
-    path, st = location(a.get('path'))
-    if action == 'stat':
-        return {'ok': True, 'name': path.name, 'size': st.st_size,
-                'mtime_ns': str(st.st_mtime_ns), 'mime': 'application/pdf'}
-    if action == 'read':
+        return {'ok': True, 'version': '0.3.5'}
+    if action not in ('stat', 'read'):
+        raise ValueError('Unsupported command')
+    with open_pdf(a.get('path')) as (path, stream, info):
+        if action == 'stat':
+            return {'ok': True, 'name': path.name, 'size': info.st_size,
+                    'mtime_ns': str(info.st_mtime_ns), 'mime': 'application/pdf'}
         offset, count = a.get('offset'), a.get('count')
-        if not isinstance(offset, int) or not isinstance(count, int):
+        if type(offset) is not int or type(count) is not int:
             raise ValueError('Invalid PDF chunk offset')
-        if not (0 <= offset < st.st_size and 1 <= count <= CHUNK and offset + count <= st.st_size):
+        if not (0 <= offset < info.st_size and 1 <= count <= CHUNK and offset + count <= info.st_size):
             raise ValueError('Chunk outside PDF bounds')
-        if str(st.st_mtime_ns) != a.get('mtime_ns') or st.st_size != a.get('size'):
+        if str(info.st_mtime_ns) != a.get('mtime_ns') or info.st_size != a.get('size'):
             raise ValueError('PDF changed during staging')
-        with path.open('rb') as f:
-            f.seek(offset)
-            data = f.read(count)
-        if len(data) != count:
+        stream.seek(offset)
+        data = stream.read(count)
+        after = os.fstat(stream.fileno())
+        if len(data) != count or (after.st_mtime_ns, after.st_size) != (info.st_mtime_ns, info.st_size):
             raise ValueError('File changed while reading')
         return {'ok': True, 'offset': offset, 'data': base64.b64encode(data).decode('ascii')}
-    raise ValueError('Unsupported command')
 
 
 def main():

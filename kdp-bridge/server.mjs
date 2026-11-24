@@ -4,6 +4,7 @@ import {WebSocketServer,WebSocket} from 'ws';
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {createOAuth,readBody,send,matches} from './oauth.mjs';
 import {VERSION,createMcp} from './tools.mjs';
+import {createAttachmentReceiver} from './attachment.mjs';
 import {createTransferIngress} from './http-transfer.mjs';
 
 const port = Number(process.env.PORT || 3000);
@@ -17,6 +18,8 @@ const oauth = createOAuth({origin,ownerSecret:owner,signingKey:sign('oauth',orig
 let paired;
 let lastDisconnect=null;
 let lastPairedAt=null;
+let lastBrowserMessage=0;
+const responsive=()=>paired?.readyState===WebSocket.OPEN && Date.now()-lastBrowserMessage<75000;
 const requests = new Map();
 const candidates = new Map();
 const sockets = new WebSocketServer({noServer:true,maxPayload:12*1024*1024,perMessageDeflate:false});
@@ -41,14 +44,14 @@ function dispatch() {
 }
 const browser = {
   status:()=>({
-    version:VERSION, paired:paired?.readyState===WebSocket.OPEN,
+    version:VERSION, paired:responsive(), last_browser_message_at:lastBrowserMessage?new Date(lastBrowserMessage).toISOString():null,
     last_paired_at:lastPairedAt,last_disconnect:lastDisconnect,
     active_operation: activeId ? {operation_id:activeId, type:requests.get(activeId)?.op} : null,
     queued_operations:queue.length
   }),
   call(op,args) {
     const ws=paired;
-    if (ws?.readyState !== WebSocket.OPEN) throw Error('Brave is not paired');
+    if (!responsive()) throw Error('Brave is disconnected or its worker stopped responding');
     if (requests.size >= 12) throw Error('Browser operation queue is full');
     if (op === 'publish' && requests.size) throw Error('Finish pending operations and reinspect the pricing page before publishing');
     const id=randomUUID();
@@ -60,6 +63,7 @@ const browser = {
   }
 };
 const ingress=createTransferIngress({origin,dispatch:(op,args)=>browser.call(op,args)});
+browser.stageAttachment=createAttachmentReceiver(browser);
 browser.prepareTransfer=a=>ingress.prepare(a);
 browser.pullTransfer=a=>ingress.pull(a);
 function finish(id,err,value) {
@@ -112,7 +116,7 @@ sockets.on('connection',ws=>{
   ws.on('pong',()=>{lastPong=Date.now();});
   const keepAlive=setInterval(()=>{
     if(ws.readyState!==WebSocket.OPEN) return;
-    if(Date.now()-lastPong>85000) {
+    if(Date.now()-lastPong>85000 || (ws===paired && !responsive())) {
       ws.terminate();return;
     }
     try {ws.ping();} catch {ws.terminate();}
@@ -135,9 +139,10 @@ sockets.on('connection',ws=>{
           return ws.send(JSON.stringify({type:'challenge',code}));
         }
         if (m.type!=='pair' || (!/^[\w-]{43}\.\d{13}$/.test(m.device||'') || Number(m.device.split('.')[1])<=Date.now()) || !matches(m.proof,sign('browser',m.device)) || paired) return ws.close(1008,'Pairing rejected');
-        clearTimeout(deadline); paired=ws;lastPairedAt=new Date().toISOString();
+        clearTimeout(deadline); paired=ws;lastBrowserMessage=Date.now();lastPairedAt=new Date().toISOString();
         return ws.send(JSON.stringify({type:'paired'}));
       }
+      lastBrowserMessage=Date.now();
       if (m.type==='heartbeat') return ws.send(JSON.stringify({type:'alive'}));
       if (m.type==='result' && requests.get(m.id)?.ws===ws) finish(m.id,m.ok?null:Error(String(m.error||'Brave operation failed').slice(0,300)),m.value);
     } catch { ws.close(1008,'Invalid message'); }

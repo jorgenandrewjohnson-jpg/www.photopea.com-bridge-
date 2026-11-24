@@ -35,6 +35,11 @@ test('native PDF host reads only explicitly allowed Desktop PDFs in bounded chun
       size:stat.size,mtime_ns:stat.mtime_ns},home).ok,false);
     assert.equal(message({action:'read',path:file,offset:0,count:1,
       size:stat.size,mtime_ns:'0'},home).ok,false);
+    const workspace=join(home,'Library/Application Support/KDP Brave Bridge/Publishing');
+    await mkdir(workspace,{recursive:true});
+    const workspaceFile=join(workspace,'Proof.pdf');
+    await writeFile(workspaceFile,'%PDF-1.7 proof');
+    assert.equal(message({action:'stat',path:workspaceFile},home).size,14);
     const oversized=join(home,'Desktop','too-large.pdf');
     await writeFile(oversized,'%PDF-1.7');
     await truncate(oversized,250*1024*1024+1);

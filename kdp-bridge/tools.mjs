@@ -5,11 +5,11 @@ const tab = {tab_id:z.number().int().nonnegative()};
 const page = {...tab, document_id:z.string().min(1).max(100), expected_path:z.string().max(500)};
 const control = {...page, control_id:z.string().uuid()};
 const text = z.string().trim().min(1).max(1000);
-export const VERSION = '0.3.4';
+export const VERSION = '0.3.5';
 export function createMcp(browser) {
   const server = new McpServer({name:'kdp-browser-bridge',version:VERSION});
-  function register(name, description, inputSchema, readOnlyHint, handler) {
-    server.registerTool('kdp_'+name,{description,inputSchema,_meta:{securitySchemes:[{type:'oauth2',scopes:['kdp:publish-workflow']}]},annotations:{readOnlyHint,destructiveHint:!readOnlyHint,openWorldHint:true}}, async args=>{
+  function register(name, description, inputSchema, readOnlyHint, handler, meta={}) {
+    server.registerTool('kdp_'+name,{description,inputSchema,_meta:{...meta,securitySchemes:[{type:'oauth2',scopes:['kdp:publish-workflow']}]},annotations:{readOnlyHint,destructiveHint:!readOnlyHint,openWorldHint:true}}, async args=>{
       const result = await handler(args);
       if (name === 'capture') return {content:[{type:'image',mimeType:'image/png',data:result.data},{type:'text',text:JSON.stringify(result.page)}]};
       return {content:[{type:'text',text:JSON.stringify(result)}]};
@@ -27,7 +27,7 @@ export function createMcp(browser) {
   register('scroll','Scroll a verified publishing document.',{...page,y:z.number().int().min(-4000).max(4000)},false,a=>browser.call('scroll',a));
   register('capture','Capture the visible approved preview or Cover Creator tab. Report the visible pages and uninspected ranges.',page,true,a=>browser.call('capture',a));
   register('list_staged_files','List edition-bound files selected locally in Brave.',{},true,()=>browser.call('staged',{}));
-  register('stage_file','Stage an existing PDF from the Mac owner-approved Desktop or Downloads folder via the installed read-only native helper. Check the returned SHA-256 before upload.',{tab_id:z.number().int().nonnegative(),edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text,path:z.string().min(1).max(1024),kind:z.enum(['manuscript','cover'])},false,a=>browser.call('stage_file',a));
+  register('stage_file','Stage an existing PDF from the private Mac Publishing folder or an owner-approved Desktop or Downloads folder via the installed read-only native helper. Check the returned SHA-256 before upload.',{tab_id:z.number().int().nonnegative(),edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text,path:z.string().min(1).max(1024),kind:z.enum(['manuscript','cover'])},false,a=>browser.call('stage_file',a));
   register('receive_file','Receive a PDF, EPUB, DOCX or Kindle cover image directly from ChatGPT as bounded SHA-256-verified chunks, scoped to a saved KDP edition. No Mac staging required. Begin: tab, edition, edition_id, kind, filename, byte size and sha256. Append: transfer_id, sequential index, base64. Commit after all bytes; then use kdp_upload_file.',{
     action:z.enum(['begin','append','commit','abort']),
     tab_id:z.number().int().nonnegative().optional(),edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']).optional(),
@@ -47,6 +47,11 @@ export function createMcp(browser) {
     'Import an approved ChatGPT PDF using its short-lived signed OpenAI file URL into an already begun, edition-bound transfer. Requires the transfer_id from receive_file begin. This stages the PDF in Brave but does not upload or publish it. Only the allowlisted signed OpenAI file host is accepted.',
     {transfer_id:z.string().uuid(),signed_url:z.string().url().max(2400)},false,
     a=>browser.pullTransfer({action:'append',transfer_id:a.transfer_id,index:0,data_base64:'oaisignedurl1:'+a.signed_url}));
+  register('stage_attachment','Stage an authorized ChatGPT attachment or Google Drive export in the exact saved KDP edition. The server streams the bytes and verifies their SHA-256 in Brave. Supply the file parameter directly. Upload requires a separate command.',{
+    ...tab, edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']), edition_id:text,
+    kind:z.enum(['manuscript','cover']), name:z.string().max(180).optional(),
+    file:z.object({download_url:z.string(),file_id:z.string(),mime_type:z.string().optional(),file_name:z.string().optional()})
+  },false,args=>browser.stageAttachment(args),{'openai/fileParams':['file']});
   register('upload_file','Upload an edition-bound PDF, EPUB or Kindle cover image received through kdp_receive_file, using a freshly inspected exact KDP file input. Verify Amazon processing separately; dispatch alone is not acceptance.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_staged_file','Send selected local artifact to a matching Content file input. Check Amazon processing separately.',{...control,file_id:z.string().uuid()},false,a=>browser.call('upload',a));
   register('upload_status','Inspect browser upload transfer records and Amazon processing notices for the exact edition; do not infer acceptance from a dispatched upload.',{...page,edition:z.enum(['hardcover','paperback','kindle-ebook','kindle','ebook']),edition_id:text},true,a=>browser.call('upload_status',a));

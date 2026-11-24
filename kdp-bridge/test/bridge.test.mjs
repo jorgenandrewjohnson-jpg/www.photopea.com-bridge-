@@ -41,7 +41,11 @@ test('OAuth discovery, MCP calls, enrollment, single-browser ownership and disco
   t.after(()=>proc.kill());await once(proc.stdout,'data');
   const denied=await fetch(origin+'/mcp');assert.equal(denied.status,401);assert.match(denied.headers.get('www-authenticate'),/resource_metadata/);
   const client=await connectClient(origin,key);t.after(()=>client.close());
-  const defs=await client.listTools();assert.equal(defs.tools.length,15);
+  const defs=await client.listTools();
+  const names=new Set(defs.tools.map(tool=>tool.name));
+  for (const name of ['kdp_receive_file','kdp_import_signed_chatgpt_pdf','kdp_upload_file','kdp_upload_status','kdp_publish_approved']) {
+    assert.ok(names.has(name), 'Missing registered tool '+name);
+  }
   const call=(name,args={})=>client.callTool({name,arguments:args});
   assert.equal(JSON.parse((await call('kdp_bridge_status')).content[0].text).paired,false);
   assert.equal((await call('kdp_click',{})).isError,true);
