@@ -233,3 +233,36 @@ test('KDP current Amazon.com USD input is recognized only in the correct marketp
   ]})));
   assert.equal(mismatched.amazon_com_list_price_usd,null);
 });
+
+test('native dashboard advertises a read-only MCP Apps resource and returns verified edition observations',async t=>{
+  const browser=paired([tab(1,'details')],r=>snapshot(r,{controls:[{kind:'fill',label:'Book Title',value:'A Test Book'}]}));
+  browser.status=()=>({paired:true,version:'0.3.6',private_value:secret});
+  const server=createMcp(browser);
+  const client=new Client({name:'dashboard-test',version:'1'});
+  const [a,b]=InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(a),client.connect(b)]);
+  t.after(()=>client.close());
+  const def=(await client.listTools()).tools.find(d=>d.name==='kdp_publishing_dashboard');
+  assert.equal(def.annotations.readOnlyHint,true);
+  assert.equal(def.annotations.destructiveHint,false);
+  const uri=def._meta.ui.resourceUri;
+  assert.equal((await client.listResources()).resources.find(r=>r.uri===uri).mimeType,'text/html;profile=mcp-app');
+  const resource=(await client.readResource({uri})).contents[0];
+  assert.equal(resource.mimeType,'text/html;profile=mcp-app');
+  assert.match(resource.text,/ui\/initialize/);
+  assert.match(resource.text,/tools\/call/);
+  assert.doesNotMatch(resource.text,/kdp_publish_approved|innerHTML/);
+  assert.equal((await client.callTool({name:def.name,arguments:{edition_id:'new'}})).isError,true);
+  const response=await client.callTool({name:def.name,arguments:{}});
+  assert.equal(response.isError,undefined);
+  assert.equal(response.structuredContent.title,'A Test Book');
+  assert.equal(response.structuredContent.edition_id,editionId);
+  assert.deepEqual(response.structuredContent.bridge,{paired:true,version:'0.3.6'});
+  assert.equal(response.structuredContent.preflight.status,'unknown');
+  assert.doesNotMatch(JSON.stringify(response),/PRIVATE_SENTINEL/);
+  assert.ok(browser.calls.every(c=>['tabs','inspect'].includes(c.op)));
+  browser.status=()=>({paired:false,version:'0.3.6'});
+  const offline=await client.callTool({name:def.name,arguments:{edition_id:editionId}});
+  assert.equal(offline.structuredContent.status,'offline');
+  assert.equal(offline.structuredContent.bridge.paired,false);
+});

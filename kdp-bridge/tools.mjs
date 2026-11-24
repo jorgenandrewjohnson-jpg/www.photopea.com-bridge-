@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { readFileSync } from 'node:fs';
 import { openable } from './extension/policy.js';
 import {workflowOverview, preflight, savedEditionId} from './workflow.mjs';
 const tab = {tab_id:z.number().int().nonnegative()};
@@ -22,6 +23,19 @@ export function createMcp(browser) {
   const workflowResult = z.looseObject({edition_id:z.string().nullable(),status:z.string(),next_action:z.string()});
   register('workflow_overview','Summarize already-open setup tabs for one saved edition. If several IDs are open, specify edition_id. Returned observations may be incomplete.',
     z.strictObject({edition_id:editionId.optional()}),true,a=>workflowOverview(browser,a.edition_id),{},workflowResult);
+  // A native MCP Apps dashboard, separate from the existing headless workflow tools.
+  const dashboardUri = 'ui://kdp/publishing-dashboard-v1.html';
+  const dashboardMime = 'text/html;profile=mcp-app';
+  server.registerResource('kdp-publishing-dashboard',dashboardUri,{mimeType:dashboardMime},async()=>({
+    contents:[{uri:dashboardUri,mimeType:dashboardMime,text:readFileSync(new URL('./dashboard.html',import.meta.url),'utf8')}]
+  }));
+  const dashboardResult = z.looseObject({edition_id:z.string().nullable(),status:z.string(),next_action:z.string(),bridge:z.object({paired:z.boolean(),version:z.string()})});
+  register('publishing_dashboard','Show the native KDP publishing dashboard for one exact saved edition, or list open edition IDs when ambiguous. Read-only: does not upload, edit, save or publish.',
+    z.strictObject({edition_id:editionId.optional()}),true,async a=>{
+      const overview=await workflowOverview(browser,a.edition_id);
+      const status=browser.status();
+      return {...overview,bridge:{paired:status.paired,version:status.version},preflight:preflight(overview)};
+    },{ui:{resourceUri:dashboardUri},'openai/outputTemplate':dashboardUri},dashboardResult);
   register('preflight_edition','Read the release checklist for one exact saved edition and identify missing evidence and observed blockers.',
     z.strictObject({edition_id:editionId}),true,async a=>preflight(await workflowOverview(browser,a.edition_id)),{},workflowResult);
   register('open','Open Bookshelf, Create, or an existing verified edition URL.',{url:z.string().url().max(500)},false,a=>{
