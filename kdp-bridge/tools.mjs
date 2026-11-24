@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { openable } from './extension/policy.js';
+import {workflowOverview, preflight, savedEditionId} from './workflow.mjs';
 const tab = {tab_id:z.number().int().nonnegative()};
 const page = {...tab, document_id:z.string().min(1).max(100), expected_path:z.string().max(500)};
 const control = {...page, control_id:z.string().uuid()};
@@ -8,15 +9,21 @@ const text = z.string().trim().min(1).max(1000);
 export const VERSION = '0.3.6';
 export function createMcp(browser) {
   const server = new McpServer({name:'kdp-browser-bridge',version:VERSION});
-  function register(name, description, inputSchema, readOnlyHint, handler, meta={}) {
-    server.registerTool('kdp_'+name,{description,inputSchema,_meta:{...meta,securitySchemes:[{type:'oauth2',scopes:['kdp:publish-workflow']}]},annotations:{readOnlyHint,destructiveHint:!readOnlyHint,openWorldHint:true}}, async args=>{
+  function register(name, description, inputSchema, readOnlyHint, handler, meta={}, outputSchema) {
+    server.registerTool('kdp_'+name,{description,inputSchema,outputSchema,_meta:{...meta,securitySchemes:[{type:'oauth2',scopes:['kdp:publish-workflow']}]},annotations:{readOnlyHint,destructiveHint:!readOnlyHint,openWorldHint:true}}, async args=>{
       const result = await handler(args);
       if (name === 'capture') return {content:[{type:'image',mimeType:'image/png',data:result.data},{type:'text',text:JSON.stringify(result.page)}]};
-      return {content:[{type:'text',text:JSON.stringify(result)}]};
+      return {content:[{type:'text',text:JSON.stringify(result)}],...(outputSchema ? {structuredContent:result} : {})};
     });
   }
   register('bridge_status','Read bridge version and current Brave pairing.',{},true,()=>browser.status());
   register('list_tabs','List supported KDP publishing tabs and edition IDs.',{},true,()=>browser.call('tabs',{}));
+  const editionId = z.string().regex(savedEditionId,'Expected a saved KDP edition ID');
+  const workflowResult = z.looseObject({edition_id:z.string().nullable(),status:z.string(),next_action:z.string()});
+  register('workflow_overview','Summarize already-open setup tabs for one saved edition. If several IDs are open, specify edition_id. Returned observations may be incomplete.',
+    z.strictObject({edition_id:editionId.optional()}),true,a=>workflowOverview(browser,a.edition_id),{},workflowResult);
+  register('preflight_edition','Read the release checklist for one exact saved edition and identify missing evidence and observed blockers.',
+    z.strictObject({edition_id:editionId}),true,async a=>preflight(await workflowOverview(browser,a.edition_id)),{},workflowResult);
   register('open','Open Bookshelf, Create, or an existing verified edition URL.',{url:z.string().url().max(500)},false,a=>{
     if (!openable(a.url)) throw Error('Unsupported publishing destination');
     return browser.call('open',a);

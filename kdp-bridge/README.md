@@ -1,5 +1,15 @@
 # Brave KDP publishing bridge
 
+## Read an edition from native ChatGPT
+
+Call `kdp_workflow_overview` with `{}` to summarize the one saved edition open in paired Brave, or supply `{"edition_id":"AB123"}`. If several IDs are open, the tool returns the available IDs and waits for a selection. If two formats share the selected ID, keep only the intended format open. Neither tool opens a tab or changes a KDP page.
+
+The overview inspects up to three setup tabs, one each for Details, Content and Pricing. For duplicate tabs at a stage it uses the uniquely active copy, otherwise it skips that stage. The current stage is the uniquely active inspected tab for the edition. Each read checks the original path and returned edition identity. The result includes alert categories and recognized fields. An unavailable tab, unrecognized field or conflicting observation leaves the corresponding fact unknown. Inspection refreshes the extension's control IDs, so inspect the target again before any separate edit or upload.
+
+Call `kdp_preflight_edition` with an exact saved ID for a checklist of outstanding release checks. A displayed Amazon.com price or selected rights option is an observation. Verify the saved pricing and territories in KDP. Print Previewer approval requires an explicit approval notice. A working Previewer button, a staged file, a present cover or an upload dispatch cannot confirm approval or acceptance of the intended file revision. The existing scanner cannot independently establish the latest manuscript and cover revisions or release-wide clearance, so preflight reports `unknown` or `blocked`.
+
+Native ChatGPT already supports authorized attachments through the `file` parameter of `kdp_stage_attachment` (declared in `openai/fileParams`). Staging verifies delivery to Brave. Upload to Amazon and verification of Amazon's processing are separate steps. The Amazon browser workflow remains necessary unless an authorized official API provides the corresponding operation.
+
 ## Version 0.3.6
 
 Brave checkpoints each acknowledged chunk and its next offset together in IndexedDB. After an interruption, begin the same transfer on the same saved edition and Content tab. Use the returned byte count and next index for chunked MCP delivery. A private HTTPS exporter can send the complete original file to the fresh one-use receipt. The bridge skips already stored bytes and verifies the full stream SHA-256. Partial transfers expire after 20 minutes. Check staged files after an uncertain commit and inspect Amazon before retrying an upload.
