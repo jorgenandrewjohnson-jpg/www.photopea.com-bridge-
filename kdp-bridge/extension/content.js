@@ -10,7 +10,7 @@
   const identity = el => [el.id,el.name,label(el)].join(' ').toLowerCase();
   const allowedField = /(?:title|subtitle|author|contributor|first.?name|last.?name|keyword|description|series.?name|book.?order|language|book.?number)/i;
   const ordinary = /^(?:save (?:as draft|draft|and continue)|save changes|launch (?:cover creator|previewer|print previewer|online previewer)|preview (?:your )?book|next(?: page)?|previous(?: page)?|back|continue setup|edit (?:ebook|kindle ebook|paperback|hardcover) (?:details|content|pricing)|(?:\+\s*)?create (?:kindle ebook|paperback|hardcover|series)|(?:choose|select) (?:design|layout|template)|save (?:cover|and exit)|(?:paperback|hardcover|kindle ebook) (?:details|content|rights & pricing))$/i;
-  const publication = /^publish (?:your |my )?(paperback|hardcover|kindle ebook|ebook)$/i;
+  const publication = /^publish (?:your |my )?(paperback|hardcover|kindle ebook|ebook)(?: book)?$/i;
   const positiveStage = (name,stage) => {
     if (/^publish /i.test(name)) return ['pricing','rights-and-pricing'].includes(stage);
     if (/^(launch|preview .*book)/i.test(name)) return stage==='content';
